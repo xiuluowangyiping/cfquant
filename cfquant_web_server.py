@@ -59,7 +59,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260827_01"
+WEB_VERSION = "web_20260828_02"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
@@ -67,21 +67,27 @@ RUNTIME_DIR = os.path.abspath(os.environ.get("CFQUANT_RUNTIME_DIR") or os.path.j
 RUNTIME_CONFIG_DIR = os.path.join(RUNTIME_DIR, "config")
 RUNTIME_DB_DIR = os.path.join(RUNTIME_DIR, "db")
 RUNTIME_LTTX_DIR = os.path.join(RUNTIME_DIR, "lttx")
+RUNTIME_MEDIA_DIR = os.path.join(RUNTIME_DIR, "media")
 RUNTIME_REPORTS_DIR = os.path.join(RUNTIME_DIR, "reports")
 RUNTIME_STATUS_DIR = os.path.join(RUNTIME_DIR, "status")
+RUNTIME_AVATAR_DIR = os.path.join(RUNTIME_MEDIA_DIR, "avatars")
 try:
     os.makedirs(RUNTIME_CONFIG_DIR, exist_ok=True)
     os.makedirs(RUNTIME_DB_DIR, exist_ok=True)
     os.makedirs(RUNTIME_LTTX_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_MEDIA_DIR, exist_ok=True)
     os.makedirs(RUNTIME_REPORTS_DIR, exist_ok=True)
     os.makedirs(RUNTIME_STATUS_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_AVATAR_DIR, exist_ok=True)
 except Exception:
     RUNTIME_DIR = BASE_DIR
     RUNTIME_CONFIG_DIR = BASE_DIR
     RUNTIME_DB_DIR = BASE_DIR
     RUNTIME_LTTX_DIR = BASE_DIR
+    RUNTIME_MEDIA_DIR = BASE_DIR
     RUNTIME_REPORTS_DIR = BASE_DIR
     RUNTIME_STATUS_DIR = BASE_DIR
+    RUNTIME_AVATAR_DIR = BASE_DIR
 LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(BASE_DIR, "log"))
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -225,6 +231,7 @@ RUNTIME_REPORT_TTL_SECONDS = float(os.environ.get("CFQUANT_QMT_RUNTIME_REPORT_TT
 ACCOUNT_CACHE_REFRESH_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "5"))
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "30"))
 UPDATE_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_UPDATE_UPLOAD_MAX_BYTES", str(80 * 1024 * 1024)))
+AVATAR_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_AVATAR_UPLOAD_MAX_BYTES", str(2 * 1024 * 1024)))
 DEFAULT_UPDATE_REPO_URL = os.environ.get("CFQUANT_UPDATE_REPO_URL", "https://github.com/95ge/cfquant.git").strip()
 DEFAULT_OFFICIAL_SITE_URL = os.environ.get("CFQUANT_OFFICIAL_SITE_URL", "https://cfquant.org").strip().rstrip("/")
 DEFAULT_UPDATE_REF = os.environ.get("CFQUANT_UPDATE_REF", "main").strip()
@@ -234,8 +241,15 @@ PROJECT_UPDATE_DIR = os.path.join(BASE_DIR, ".cfquant_project_updates")
 PROJECT_UPDATE_BACKUP_KEEP = int(os.environ.get("CFQUANT_PROJECT_UPDATE_BACKUP_KEEP", "2"))
 QMT_ENTRY_SCRIPT_NAMES = (
     "CFQUANT_CTYPE_ALL_LOWLAT.py",
+    "CFQUANT_LITE.py",
     "CFQUANT.py",
     "CFQUANT_TRADE_LOWLAT.py",
+    os.path.join("同账号独立市场", "CFQUANT_CTYPE_ALL_LOWLAT_SH.py"),
+    os.path.join("同账号独立市场", "CFQUANT_CTYPE_ALL_LOWLAT_SZ.py"),
+    os.path.join("同账号独立市场", "CFQUANT_TRADE_LOWLAT_SH.py"),
+    os.path.join("同账号独立市场", "CFQUANT_TRADE_LOWLAT_SZ.py"),
+    os.path.join("同账号独立市场", "CFQUANT_LITE_SH.py"),
+    os.path.join("同账号独立市场", "CFQUANT_LITE_SZ.py"),
 )
 WEB_BOUND_HOST = None
 WEB_BOUND_PORT = None
@@ -245,6 +259,20 @@ WEB_AUTH_TOKENS = {}
 WEB_AUTH_LOCK = threading.RLock()
 WEB_AUTH_COOKIE_NAME = "cfquant_web_token"
 WEB_AUTH_SESSION_TTL_SECONDS = float(os.environ.get("CFQUANT_WEB_AUTH_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
+BUILTIN_AVATARS = (
+    {"id": "market-blue", "name": "Market Blue", "url": "/avatars/market-blue.svg"},
+    {"id": "signal-green", "name": "Signal Green", "url": "/avatars/signal-green.svg"},
+    {"id": "copper-grid", "name": "Copper Grid", "url": "/avatars/copper-grid.svg"},
+    {"id": "violet-node", "name": "Violet Node", "url": "/avatars/violet-node.svg"},
+    {"id": "slate-wave", "name": "Slate Wave", "url": "/avatars/slate-wave.svg"},
+    {"id": "amber-pulse", "name": "Amber Pulse", "url": "/avatars/amber-pulse.svg"},
+    {"id": "teal-orbit", "name": "Teal Orbit", "url": "/avatars/teal-orbit.svg"},
+    {"id": "rose-circuit", "name": "Rose Circuit", "url": "/avatars/rose-circuit.svg"},
+)
+DEFAULT_AVATAR_URL = BUILTIN_AVATARS[0]["url"]
+BUILTIN_AVATAR_URLS = set(item["url"] for item in BUILTIN_AVATARS)
+AVATAR_UPLOAD_URL_PREFIX = "/media/avatars/"
+AVATAR_UPLOAD_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 STOCK_BUY = 23
 STOCK_SELL = 24
 FIX_PRICE = 11
@@ -283,6 +311,15 @@ ACCOUNT_TYPE_LABELS = {
 }
 DOWNLOAD_CALLBACK_EVENT = "xtdata:download_progress"
 DOWNLOAD_EVENT_PREFIX = "xtdata:download"
+MARKET_ROUTE_MARKETS = ("SH", "SZ")
+MARKET_ROUTE_TRADE_ACTIONS = {
+    "xttrader.order_stock",
+    "xttrader.order_stock_async",
+    "xttrader.order_stock_batch",
+    "xttrader.cancel_order_stock_sysid",
+    "xttrader.cancel_order_stock_sysid_async",
+}
+MARKET_ROUTE_CONFIG_FILENAME_TEMPLATE = "cfquant_bridge_config_%s.json"
 
 
 def normalize_account_type(value=None, default="STOCK"):
@@ -345,6 +382,129 @@ def account_identity(account_id=None, account_type=None, bridge_id=None, account
         "account_type_label": account_type_label(account_type),
         "bridge_id": bridge_id,
     }
+
+
+def parse_config_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    text = str(value).strip().lower()
+    if not text:
+        return bool(default)
+    if text in ("1", "true", "yes", "y", "on", "enable", "enabled", "open"):
+        return True
+    if text in ("0", "false", "no", "n", "off", "disable", "disabled", "closed", "close"):
+        return False
+    return bool(default)
+
+
+def normalize_market_code(value):
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    text = text.replace("_", "").replace("-", "")
+    aliases = {
+        "SH": "SH",
+        "SSE": "SH",
+        "SHSE": "SH",
+        "XSHG": "SH",
+        "1": "SH",
+        "SZ": "SZ",
+        "SZSE": "SZ",
+        "XSHE": "SZ",
+        "0": "SZ",
+        "2": "SZ",
+    }
+    return aliases.get(text, text if text in MARKET_ROUTE_MARKETS else "")
+
+
+def stock_code_market(stock_code):
+    text = str(stock_code or "").strip().upper()
+    if not text:
+        return ""
+    if "." in text:
+        return normalize_market_code(text.rsplit(".", 1)[-1])
+    code = re.sub(r"\D", "", text)
+    if not code:
+        return ""
+    if code.startswith(("5", "6", "9")):
+        return "SH"
+    if code.startswith(("0", "1", "2", "3")):
+        return "SZ"
+    return ""
+
+
+def request_params_market(params):
+    if not isinstance(params, dict):
+        return ""
+    for key in ("route_market", "market", "exchange", "exchange_id", "market_id"):
+        market = normalize_market_code(params.get(key))
+        if market:
+            return market
+    for key in ("stock_code", "code", "security_code", "instrument_id"):
+        market = stock_code_market(params.get(key))
+        if market:
+            return market
+    orders = params.get("orders")
+    if isinstance(orders, list):
+        markets = set()
+        for row in orders:
+            market = request_params_market(row) if isinstance(row, dict) else ""
+            if market:
+                markets.add(market)
+        if len(markets) == 1:
+            return next(iter(markets))
+    return ""
+
+
+def split_orders_by_market(orders):
+    groups = {}
+    for index, row in enumerate(orders or []):
+        market = request_params_market(row) if isinstance(row, dict) else ""
+        if not market:
+            return {}
+        groups.setdefault(market, []).append((index, row))
+    return groups
+
+
+def default_market_bridge_id(account_id, account_type="STOCK", parent_bridge_id=None, market=""):
+    market = normalize_market_code(market)
+    if market not in MARKET_ROUTE_MARKETS:
+        market = "SH"
+    parent = normalize_bridge_id(parent_bridge_id or DEFAULT_BRIDGE_ID)
+    if parent == DEFAULT_BRIDGE_ID:
+        seed = "%s:%s" % (normalize_account_type(account_type), str(account_id or "").strip())
+        parent = "acct_%s" % hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
+    return normalize_bridge_id("%s_%s" % (parent, market.lower()))
+
+
+def normalize_market_bridge_config(value, account_id="", account_type="STOCK", parent_bridge_id=None, enabled=False):
+    raw = value if isinstance(value, dict) else {}
+    result = {}
+    for market in MARKET_ROUTE_MARKETS:
+        item = raw.get(market) or raw.get(market.lower()) or {}
+        if isinstance(item, str):
+            item = {"bridge_id": item}
+        if not isinstance(item, dict):
+            item = {}
+        has_input = bool(item)
+        qmt_dir = normalize_optional_path(
+            item.get("qmt_dir") or item.get("python_dir") or item.get("core_dir")
+        )
+        bridge_id = str(item.get("bridge_id") or item.get("id") or "").strip()
+        if enabled or has_input or qmt_dir:
+            bridge_id = normalize_bridge_id(
+                bridge_id or default_market_bridge_id(account_id, account_type, parent_bridge_id, market)
+            )
+            result[market] = {
+                "market": market,
+                "bridge_id": bridge_id,
+                "qmt_dir": qmt_dir,
+                "config_filename": MARKET_ROUTE_CONFIG_FILENAME_TEMPLATE % market,
+                "enabled": parse_config_bool(item.get("enabled"), True),
+            }
+    return result
 
 
 def get_lan_ip():
@@ -587,6 +747,83 @@ def revoke_web_auth_token(token):
         _delete_persistent_web_auth_session_locked(token)
 
 
+def builtin_avatar_catalog():
+    return [dict(item) for item in BUILTIN_AVATARS]
+
+
+def normalize_avatar_url(value):
+    url = str(value or "").strip()
+    if not url:
+        return DEFAULT_AVATAR_URL
+    if url in BUILTIN_AVATAR_URLS:
+        return url
+    if url.startswith(AVATAR_UPLOAD_URL_PREFIX):
+        filename = posixpath.basename(url)
+        if (
+            filename
+            and filename == url[len(AVATAR_UPLOAD_URL_PREFIX):]
+            and re.match(r"^[A-Za-z0-9_.-]+$", filename)
+            and os.path.splitext(filename)[1].lower() in AVATAR_UPLOAD_EXTENSIONS
+        ):
+            return AVATAR_UPLOAD_URL_PREFIX + filename
+    return DEFAULT_AVATAR_URL
+
+
+def avatar_kind(url):
+    url = normalize_avatar_url(url)
+    return "upload" if url.startswith(AVATAR_UPLOAD_URL_PREFIX) else "builtin"
+
+
+def normalize_user_profile(value=None):
+    row = value if isinstance(value, dict) else {}
+    avatar_url = normalize_avatar_url(row.get("avatar_url") or row.get("avatar"))
+    display_name = str(row.get("display_name") or row.get("nickname") or "").strip()[:40]
+    return {
+        "display_name": display_name,
+        "avatar_url": avatar_url,
+        "avatar_kind": avatar_kind(avatar_url),
+        "updated_at": float(row.get("updated_at") or 0),
+    }
+
+
+def profile_display_label(profile, username=""):
+    profile = normalize_user_profile(profile)
+    return profile.get("display_name") or str(username or "").strip() or "管理员"
+
+
+def user_profile_response(profile=None):
+    base_profile = profile if profile is not None else (WEB_CONFIG.user_profile() if WEB_CONFIG is not None else {})
+    profile = normalize_user_profile(base_profile)
+    username = WEB_CONFIG.web_auth_info(include_username=True).get("username") if WEB_CONFIG is not None else ""
+    profile["username"] = username or ""
+    profile["display_label"] = profile_display_label(profile, username)
+    return {
+        "profile": profile,
+        "avatars": builtin_avatar_catalog(),
+        "upload": {
+            "max_bytes": AVATAR_UPLOAD_MAX_BYTES,
+            "allowed_extensions": sorted(AVATAR_UPLOAD_EXTENSIONS),
+        },
+    }
+
+
+def detect_avatar_extension(filename, content_type, content):
+    content = content or b""
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
+        return ".gif"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return ".webp"
+    ext = os.path.splitext(str(filename or ""))[1].lower()
+    ctype = str(content_type or "").lower()
+    if ext in AVATAR_UPLOAD_EXTENSIONS and ctype in ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"):
+        return ".jpg" if ext == ".jpeg" else ext
+    raise ValueError("只支持 PNG、JPG、WEBP 或 GIF 头像")
+
+
 class WebRuntimeConfig(object):
     def __init__(self, path, settings_db_path=None):
         self.path = path
@@ -612,6 +849,7 @@ class WebRuntimeConfig(object):
             "web_auth_username": "",
             "web_auth_salt": "",
             "web_auth_hash": "",
+            "user_profile": normalize_user_profile({}),
             "cleanup_qmt_userdata_logs": False,
             "qmt_log_language": os.environ.get("CFQUANT_QMT_LOG_LANGUAGE", "zh"),
             "qmt_log_enabled": normalize_log_enabled(os.environ.get("CFQUANT_QMT_LOG_ENABLED", "1")),
@@ -649,6 +887,7 @@ class WebRuntimeConfig(object):
                             account_id=self._data["data_provider_account_id"],
                             account_type=self._data["data_provider_account_type"],
                         )
+                        self._data["user_profile"] = normalize_user_profile(raw.get("user_profile") or {})
                         web_server = raw.get("web_server") if isinstance(raw.get("web_server"), dict) else {}
                         web_port = raw.get("web_port")
                         if web_port in (None, ""):
@@ -854,15 +1093,19 @@ class WebRuntimeConfig(object):
         account_id,
         account_type="STOCK",
         bridge_id=None,
+        display_name=None,
         qmt_dir=None,
         mode="ctypes",
         data_provider=False,
         enabled=True,
+        market_routing_enabled=False,
+        market_bridges=None,
     ):
         account_id = str(account_id or "").strip()
         if not account_id:
             raise ValueError("account_id is required")
         account_type = normalize_account_type(account_type)
+        display_name = None if display_name is None else str(display_name).strip()
         qmt_dir = normalize_optional_path(qmt_dir)
         mode = normalize_transport_mode(mode)
         now = time.time()
@@ -870,6 +1113,25 @@ class WebRuntimeConfig(object):
             configs = self._data.setdefault("account_configs", {})
             bridge_id = self._account_bridge_id_locked(account_id, account_type, bridge_id, qmt_dir)
             account_key = account_key_for(account_id, account_type, bridge_id)
+            existing = configs.get(account_key)
+            if display_name is None and isinstance(existing, dict):
+                display_name = str(existing.get("display_name") or existing.get("account_name") or "").strip()
+            display_name = display_name or ""
+            if market_bridges is None and isinstance(existing, dict):
+                market_bridges = existing.get("market_bridges") or {}
+                market_routing_enabled = parse_config_bool(
+                    existing.get("market_routing_enabled"),
+                    market_routing_enabled,
+                )
+            market_routing_enabled = parse_config_bool(market_routing_enabled, False)
+            market_routes = normalize_market_bridge_config(
+                market_bridges,
+                account_id=account_id,
+                account_type=account_type,
+                parent_bridge_id=bridge_id,
+                enabled=market_routing_enabled,
+            )
+            market_routing_enabled = bool(market_routing_enabled and market_routes)
             if bridge_id not in self.bridges():
                 self._data.setdefault("bridges", {})[bridge_id] = self._bridge_row(
                     bridge_id,
@@ -888,16 +1150,35 @@ class WebRuntimeConfig(object):
                     )
                 elif qmt_dir and self._can_update_bridge_python_dir_locked(bridge_id, account_key, qmt_dir):
                     bridge["python_dir"] = qmt_dir
+            if market_routing_enabled:
+                for market, market_row in market_routes.items():
+                    if not market_row.get("enabled", True):
+                        continue
+                    market_bridge_id = normalize_bridge_id(market_row.get("bridge_id"))
+                    market_qmt_dir = normalize_optional_path(market_row.get("qmt_dir"))
+                    bridge = self._data.setdefault("bridges", {}).get(market_bridge_id)
+                    if bridge is None:
+                        self._data.setdefault("bridges", {})[market_bridge_id] = self._bridge_row(
+                            market_bridge_id,
+                            self._account_market_bridge_name(account_id, market, market_bridge_id),
+                            market_qmt_dir,
+                            {},
+                        )
+                    elif market_qmt_dir:
+                        bridge["python_dir"] = market_qmt_dir
             row = {
                 "account_key": account_key,
                 "account_id": account_id,
                 "account_type": account_type,
                 "account_type_label": account_type_label(account_type),
+                "display_name": display_name,
                 "bridge_id": bridge_id,
                 "qmt_dir": qmt_dir,
                 "mode": mode,
                 "data_provider": bool(data_provider),
                 "enabled": bool(enabled),
+                "market_routing_enabled": market_routing_enabled,
+                "market_bridges": market_routes if market_routing_enabled else {},
                 "updated_at": now,
             }
             if data_provider:
@@ -916,6 +1197,9 @@ class WebRuntimeConfig(object):
                 "account_id": account_id,
                 "account_type": account_type,
                 "bridge_id": bridge_id,
+                "display_name": display_name,
+                "market_routing_enabled": market_routing_enabled,
+                "market_bridges": market_routes if market_routing_enabled else {},
                 "updated_at": now,
             }
             self._data["initialized"] = True
@@ -1019,6 +1303,10 @@ class WebRuntimeConfig(object):
             return "默认账号"
         return "账号 %s" % mask_text(account_id)
 
+    def _account_market_bridge_name(self, account_id, market, bridge_id):
+        market = normalize_market_code(market) or str(market or "").upper()
+        return "%s %s" % (self._account_bridge_name(account_id, bridge_id), market)
+
     def reset_setup(self):
         with self._lock:
             self._data["initialized"] = False
@@ -1089,6 +1377,23 @@ class WebRuntimeConfig(object):
             "username": username if include_username else "",
             "username_masked": mask_text(username),
         }
+
+    def user_profile(self):
+        with self._lock:
+            return normalize_user_profile(self._data.get("user_profile") or {})
+
+    def set_user_profile(self, display_name=None, avatar_url=None):
+        with self._lock:
+            profile = normalize_user_profile(self._data.get("user_profile") or {})
+            if display_name is not None:
+                profile["display_name"] = str(display_name or "").strip()[:40]
+            if avatar_url is not None:
+                profile["avatar_url"] = normalize_avatar_url(avatar_url)
+                profile["avatar_kind"] = avatar_kind(profile["avatar_url"])
+            profile["updated_at"] = time.time()
+            self._data["user_profile"] = profile
+            self._save_locked()
+            return dict(profile)
 
     def verify_web_auth(self, username, password):
         with self._lock:
@@ -1374,10 +1679,11 @@ class WebRuntimeConfig(object):
                     pairs.pop(key, None)
             self._save_locked()
 
-    def save_pair(self, account_id, bridge_id, account_type="STOCK", account_key=None):
+    def save_pair(self, account_id, bridge_id, account_type="STOCK", account_key=None, display_name=None):
         account_id = str(account_id or "").strip()
         account_type = normalize_account_type(account_type)
         bridge_id = normalize_bridge_id(bridge_id)
+        display_name = str(display_name or "").strip()
         if not account_id:
             raise ValueError("account_id is required")
         if bridge_id not in self.bridges():
@@ -1388,6 +1694,7 @@ class WebRuntimeConfig(object):
             "account_id": account_id,
             "account_type": account_type,
             "bridge_id": bridge_id,
+            "display_name": display_name,
             "updated_at": time.time(),
         }
         with self._lock:
@@ -1557,6 +1864,15 @@ class WebRuntimeConfig(object):
                     "account_id": account_id,
                     "account_type": account_type,
                     "bridge_id": bridge_id,
+                    "display_name": str(item.get("display_name") or item.get("account_name") or ""),
+                    "market_routing_enabled": parse_config_bool(item.get("market_routing_enabled"), False),
+                    "market_bridges": normalize_market_bridge_config(
+                        item.get("market_bridges") or {},
+                        account_id=account_id,
+                        account_type=account_type,
+                        parent_bridge_id=bridge_id,
+                        enabled=parse_config_bool(item.get("market_routing_enabled"), False),
+                    ),
                     "updated_at": float(item.get("updated_at") or 0),
                 }
         return result
@@ -1589,11 +1905,20 @@ class WebRuntimeConfig(object):
                 "account_id": account_id,
                 "account_type": account_type,
                 "account_type_label": account_type_label(account_type),
+                "display_name": str(item.get("display_name") or item.get("account_name") or ""),
                 "bridge_id": bridge_id,
                 "qmt_dir": qmt_dir,
                 "mode": normalize_transport_mode(item.get("mode") or "ctypes"),
                 "data_provider": bool(item.get("data_provider")),
                 "enabled": item.get("enabled", True) is not False,
+                "market_routing_enabled": parse_config_bool(item.get("market_routing_enabled"), False),
+                "market_bridges": normalize_market_bridge_config(
+                    item.get("market_bridges") or {},
+                    account_id=account_id,
+                    account_type=account_type,
+                    parent_bridge_id=bridge_id,
+                    enabled=parse_config_bool(item.get("market_routing_enabled"), False),
+                ),
                 "updated_at": float(item.get("updated_at") or 0),
             }
         return result
@@ -1645,18 +1970,32 @@ def normalize_transport_mode(value):
     value = str(value or "ctypes").strip().lower()
     if value in ("pipe", "ctypes", "named_pipe", "named-pipe", "universal", "universal_ctypes"):
         return "ctypes"
+    if value in ("lite", "extreme", "extreme_lite", "lite_extreme", "lite_extreme_pipe", "extreme_pipe", "cfquant_lite", "ultimate"):
+        return "lite"
     if value in ("lttx", "socket", "normal", "default"):
         return "lttx"
     raise ValueError("unknown transport mode: %s" % value)
 
 
+def is_ctypes_transport_mode(mode):
+    return normalize_transport_mode(mode) in ("ctypes", "lite")
+
+
+def transport_client_mode(mode):
+    return "ctypes" if is_ctypes_transport_mode(mode) else "lttx"
+
+
 def transport_mode_label(mode):
     mode = normalize_transport_mode(mode)
+    if mode == "lite":
+        return "极致模式"
     return "通用模式" if mode == "ctypes" else "高级模式"
 
 
 def transport_mode_detail_label(mode):
     mode = normalize_transport_mode(mode)
+    if mode == "lite":
+        return "纯 ctypes 自包含版"
     return "ctypes 通用版" if mode == "ctypes" else "LTtx 普通/极速双桥"
 
 
@@ -1666,7 +2005,7 @@ def transport_mode_summary(mode):
         "mode": mode,
         "label": transport_mode_label(mode),
         "detail_label": transport_mode_detail_label(mode),
-        "request_scope": "单文件双通道" if mode == "ctypes" else "普通桥 + 交易桥",
+        "request_scope": "纯 ctypes 单文件双通道" if mode == "lite" else ("单文件双通道" if mode == "ctypes" else "普通桥 + 交易桥"),
     }
 
 
@@ -1765,6 +2104,82 @@ def resolve_account_mode(account_id=None, requested_mode=None, account_type=None
     return WEB_CONFIG.transport_mode() if WEB_CONFIG is not None else "ctypes"
 
 
+def account_market_route_config(account_id=None, account_type=None, bridge_id=None, account_key=None):
+    if WEB_CONFIG is None:
+        return {}, {}
+    config = WEB_CONFIG.account_config(
+        account_id=account_id,
+        account_type=account_type,
+        bridge_id=bridge_id,
+        account_key=account_key,
+    ) or {}
+    enabled = parse_config_bool(config.get("market_routing_enabled"), False)
+    routes = normalize_market_bridge_config(
+        config.get("market_bridges") or {},
+        account_id=str(config.get("account_id") or account_id or "").strip(),
+        account_type=normalize_account_type(config.get("account_type") or account_type or "STOCK"),
+        parent_bridge_id=config.get("bridge_id") or bridge_id,
+        enabled=enabled,
+    )
+    if not enabled:
+        routes = {}
+    return config, routes
+
+
+def action_supports_market_routing(action, params=None):
+    action = str(action or "").strip()
+    if action in MARKET_ROUTE_TRADE_ACTIONS:
+        return True
+    return False
+
+
+def resolve_market_route_for_request(
+    account_id=None,
+    account_type=None,
+    account_key=None,
+    bridge_id=None,
+    action=None,
+    params=None,
+    route_market=None,
+):
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    meta = {
+        "enabled": False,
+        "matched": False,
+        "market": "",
+        "base_bridge_id": bridge_id,
+        "bridge_id": bridge_id,
+        "route": None,
+    }
+    if not action_supports_market_routing(action, params):
+        return bridge_id, meta
+    config, routes = account_market_route_config(
+        account_id=account_id,
+        account_type=account_type,
+        bridge_id=bridge_id,
+        account_key=account_key,
+    )
+    meta["enabled"] = parse_config_bool(config.get("market_routing_enabled"), False)
+    if not routes:
+        return bridge_id, meta
+    market = normalize_market_code(route_market) or request_params_market(params)
+    meta["market"] = market
+    if market not in MARKET_ROUTE_MARKETS:
+        return bridge_id, meta
+    route = routes.get(market) or {}
+    if route.get("enabled", True) is False:
+        return bridge_id, meta
+    target_bridge_id = normalize_bridge_id(route.get("bridge_id") or "")
+    if not target_bridge_id:
+        return bridge_id, meta
+    meta.update({
+        "matched": True,
+        "bridge_id": target_bridge_id,
+        "route": route,
+    })
+    return target_bridge_id, meta
+
+
 def enabled_account_configs():
     configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
     result = {}
@@ -1823,13 +2238,15 @@ def default_runtime_client_mode():
     modes = configured_runtime_modes()
     if modes == {"lttx"}:
         return "lttx"
+    if modes == {"lite"}:
+        return "lite"
     return "ctypes"
 
 
 def route_channel_for_account(account_id, requested_channel=None, default="normal", mode=None, account_type=None, bridge_id=None, account_key=None):
     default = normalize_channel(default, "normal")
     mode = normalize_transport_mode(mode or resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key))
-    if mode == "ctypes":
+    if is_ctypes_transport_mode(mode):
         return default
     return normalize_channel(requested_channel, default)
 
@@ -1889,6 +2306,7 @@ class GlobalTxClient(object):
         except CfquantTimeout as e:
             if mark_offline_on_timeout:
                 self._mark_failed(cooldown_key, e)
+            self.close(mode)
             raise
         except Exception as e:
             self._mark_failed(cooldown_key, e)
@@ -1896,7 +2314,7 @@ class GlobalTxClient(object):
             raise
 
     def close(self, mode=None):
-        modes = [normalize_transport_mode(mode)] if mode else ["ctypes", "lttx"]
+        modes = [normalize_transport_mode(mode)] if mode else ["ctypes", "lite", "lttx"]
         with self._lock:
             clients = [self._clients.pop(item, None) for item in modes]
         for client in clients:
@@ -1919,10 +2337,11 @@ class GlobalTxClient(object):
 
     def _get_client(self, mode=None):
         mode = normalize_transport_mode(mode or default_runtime_client_mode())
+        client_mode = transport_client_mode(mode)
         with self._lock:
             client = self._clients.get(mode)
             if client is None:
-                if mode == "ctypes":
+                if client_mode == "ctypes":
                     cfg = get_cfquant_config()
                     from cfquant.pipe_client import PipeRpcClient
 
@@ -1930,7 +2349,7 @@ class GlobalTxClient(object):
                         pipe_name=os.environ.get("CFQUANT_PIPE_NAME") or cfg.get("pipe_name") or DEFAULT_PIPE_NAME,
                         request_channel=CHANNELS["normal"],
                         timeout=cfg.get("timeout"),
-                        client_id="%s_ctypes" % self.client_id,
+                        client_id="%s_%s" % (self.client_id, mode),
                         connect_timeout_ms=cfg.get("pipe_connect_timeout_ms"),
                     )
                 else:
@@ -1982,13 +2401,35 @@ def account_request(
     ignore_cooldown=False,
     account_type=None,
     account_key=None,
+    route_market=None,
 ):
     account_id = str(account_id or "").strip()
     request_params = params if isinstance(params, dict) else {}
     request_account = request_params.get("account") if isinstance(request_params.get("account"), dict) else {}
     account_type = normalize_account_type(account_type or request_account.get("account_type") or request_params.get("account_type") or "STOCK")
     bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id, account_type=account_type, account_key=account_key)
-    preferred_mode = resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key)
+    base_bridge_id = bridge_id
+    base_config = WEB_CONFIG.account_config(
+        account_id=account_id,
+        account_type=account_type,
+        bridge_id=base_bridge_id,
+        account_key=account_key,
+    ) if WEB_CONFIG is not None else None
+    resolved_account_key = str(
+        account_key
+        or (base_config or {}).get("account_key")
+        or account_key_for(account_id, account_type, base_bridge_id)
+    ).strip()
+    bridge_id, market_route = resolve_market_route_for_request(
+        account_id=account_id,
+        account_type=account_type,
+        account_key=resolved_account_key,
+        bridge_id=base_bridge_id,
+        action=action,
+        params=request_params,
+        route_market=route_market,
+    )
+    preferred_mode = resolve_account_mode(account_id, account_type=account_type, bridge_id=base_bridge_id, account_key=resolved_account_key)
     modes = [preferred_mode]
     if preferred_mode == "lttx":
         modes.append("ctypes")
@@ -2002,7 +2443,7 @@ def account_request(
             mode=mode,
             account_type=account_type,
             bridge_id=bridge_id,
-            account_key=account_key,
+            account_key=resolved_account_key,
         )
         started = time.perf_counter()
         try:
@@ -2021,9 +2462,11 @@ def account_request(
                 "mode": mode,
                 "channel": channel,
                 "bridge_id": bridge_id,
+                "base_bridge_id": base_bridge_id,
+                "market_route": market_route,
                 "account_id": account_id,
                 "account_type": account_type,
-                "account_key": account_key or account_key_for(account_id, account_type, bridge_id),
+                "account_key": resolved_account_key,
                 "fallback": bool(attempts),
                 "fallback_reason": str(last_error or ""),
                 "attempts": attempts + [{
@@ -2049,6 +2492,133 @@ def account_request(
     raise RuntimeError(
         "%s failed for account %s: %s" % (action, account_id or "--", detail or "no route attempted")
     )
+
+
+def account_batch_order_request(
+    account_id,
+    bridge_id,
+    requested_channel,
+    params=None,
+    default_channel="trade",
+    timeout=12.0,
+    account_type=None,
+    account_key=None,
+):
+    request_params = params if isinstance(params, dict) else {}
+    orders = request_params.get("orders") if isinstance(request_params.get("orders"), list) else []
+    groups = split_orders_by_market(orders)
+    _, market_routes = account_market_route_config(
+        account_id=account_id,
+        account_type=account_type,
+        bridge_id=bridge_id,
+        account_key=account_key,
+    )
+    if len(groups) <= 1 or not market_routes:
+        market = next(iter(groups.keys())) if groups else ""
+        return account_request(
+            account_id,
+            bridge_id,
+            requested_channel,
+            "xttrader.order_stock_batch",
+            request_params,
+            default_channel=default_channel,
+            timeout=timeout,
+            mark_offline_on_timeout=True,
+            account_type=account_type,
+            account_key=account_key,
+            route_market=market,
+        )
+
+    combined_results = [None] * len(orders)
+    group_results = []
+    attempts = []
+    started = time.perf_counter()
+    first_route = None
+    for market in MARKET_ROUTE_MARKETS:
+        entries = groups.get(market) or []
+        if not entries:
+            continue
+        route = market_routes.get(market) or {}
+        if not route.get("bridge_id"):
+            raise RuntimeError("market route %s has no bridge_id" % market)
+        group_orders = [row for _index, row in entries]
+        group_params = dict(request_params)
+        group_params["orders"] = group_orders
+        route_result = account_request(
+            account_id,
+            bridge_id,
+            requested_channel,
+            "xttrader.order_stock_batch",
+            group_params,
+            default_channel=default_channel,
+            timeout=timeout,
+            mark_offline_on_timeout=True,
+            account_type=account_type,
+            account_key=account_key,
+            route_market=market,
+        )
+        if first_route is None:
+            first_route = route_result
+        raw_result = route_result.get("result")
+        raw_results = raw_result.get("results") if isinstance(raw_result, dict) else raw_result if isinstance(raw_result, list) else None
+        if isinstance(raw_results, list):
+            for local_index, item in enumerate(raw_results):
+                if local_index >= len(entries):
+                    break
+                original_index = entries[local_index][0]
+                if isinstance(item, dict):
+                    combined = dict(item)
+                    combined["index"] = original_index
+                    combined.setdefault("market", market)
+                    combined.setdefault("bridge_id", route_result.get("bridge_id"))
+                    combined_results[original_index] = combined
+                else:
+                    combined_results[original_index] = {
+                        "ok": True,
+                        "index": original_index,
+                        "market": market,
+                        "bridge_id": route_result.get("bridge_id"),
+                        "result": item,
+                    }
+        else:
+            for original_index, _row in entries:
+                combined_results[original_index] = {
+                    "ok": True,
+                    "index": original_index,
+                    "market": market,
+                    "bridge_id": route_result.get("bridge_id"),
+                    "result": raw_result,
+                }
+        meta = dict(route_result)
+        meta.pop("result", None)
+        group_results.append({
+            "market": market,
+            "bridge_id": route_result.get("bridge_id"),
+            "channel": route_result.get("channel"),
+            "mode": route_result.get("mode"),
+            "count": len(entries),
+            "route": meta,
+        })
+        attempts.extend(route_result.get("attempts") or [])
+
+    route = dict(first_route or {})
+    route.update({
+        "result": {
+            "ok": all(item is not None and (not isinstance(item, dict) or item.get("ok", True)) for item in combined_results),
+            "market_routing": True,
+            "results": combined_results,
+            "groups": group_results,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+        },
+        "market_route": {
+            "enabled": True,
+            "matched": True,
+            "mixed": True,
+            "groups": group_results,
+        },
+        "attempts": attempts,
+    })
+    return route
 
 
 def data_provider_candidates():
@@ -2140,7 +2710,8 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
     account_id = str(account_id or "").strip() or configured_default_account_id()
     account_type = normalize_account_type(account_type or configured_default_account_type())
     bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id, account_type=account_type, account_key=account_key)
-    account_key = account_key or account_key_for(account_id, account_type, bridge_id)
+    config = WEB_CONFIG.account_config(account_id=account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key) if WEB_CONFIG else {}
+    account_key = account_key or (config or {}).get("account_key") or account_key_for(account_id, account_type, bridge_id)
     preferred_mode = resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key)
     ctypes_status = ctypes_bridge_status(bridge_id)
     if preferred_mode == "lttx":
@@ -2167,6 +2738,79 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
         effective_mode = "ctypes"
         fallback = True
     selected = advanced_status if effective_mode == "lttx" else ctypes_status
+    market_config, market_routes = account_market_route_config(
+        account_id=account_id,
+        account_type=account_type,
+        bridge_id=bridge_id,
+        account_key=account_key,
+    )
+    market_route_statuses = {}
+    for market, route in market_routes.items():
+        if route.get("enabled", True) is False:
+            continue
+        child_bridge_id = normalize_bridge_id(route.get("bridge_id") or "")
+        if not child_bridge_id:
+            continue
+        try:
+            child_ctypes_status = ctypes_bridge_status(child_bridge_id)
+        except Exception as e:
+            market_route_statuses[market] = {
+                "market": market,
+                "bridge_id": child_bridge_id,
+                "base_bridge_id": bridge_id,
+                "qmt_dir": normalize_optional_path(route.get("qmt_dir")),
+                "preferred_mode": preferred_mode,
+                "effective_mode": preferred_mode,
+                "fallback": False,
+                "ready": False,
+                "status": {},
+                "error": str(e),
+                "modes": {},
+            }
+            continue
+        child_ctypes_ready = bool((child_ctypes_status.get("trade") or {}).get("online"))
+        if preferred_mode == "lttx":
+            try:
+                child_advanced = _advanced_mode_readiness(child_bridge_id)
+                child_advanced_status = child_advanced.get("status") or {}
+                child_advanced_ready = bool((child_advanced_status.get("trade") or {}).get("online"))
+            except Exception as e:
+                child_advanced = {"ready": False, "status": {}, "skipped": True, "reason": str(e)}
+                child_advanced_status = {}
+                child_advanced_ready = False
+        else:
+            child_advanced = {"ready": False, "status": {}, "skipped": True, "reason": ""}
+            child_advanced_status = {}
+            child_advanced_ready = False
+        child_effective_mode = preferred_mode
+        child_fallback = False
+        if preferred_mode == "lttx" and not child_advanced_ready and child_ctypes_ready:
+            child_effective_mode = "ctypes"
+            child_fallback = True
+        child_selected = child_advanced_status if child_effective_mode == "lttx" else child_ctypes_status
+        market_route_statuses[market] = {
+            "market": market,
+            "bridge_id": child_bridge_id,
+            "base_bridge_id": bridge_id,
+            "qmt_dir": normalize_optional_path(route.get("qmt_dir")),
+            "preferred_mode": preferred_mode,
+            "effective_mode": child_effective_mode,
+            "fallback": child_fallback,
+            "ready": child_advanced_ready if child_effective_mode == "lttx" else child_ctypes_ready,
+            "status": child_selected,
+            "modes": {
+                "ctypes": {"ready": child_ctypes_ready, "status": child_ctypes_status},
+                "lttx": {
+                    "ready": child_advanced_ready,
+                    "status": child_advanced_status,
+                    "skipped": bool(child_advanced.get("skipped")),
+                    "reason": child_advanced.get("reason") or "",
+                },
+            },
+        }
+    market_routing_ready = bool(market_route_statuses) and all(
+        row.get("ready") for row in market_route_statuses.values()
+    )
     return {
         "account_id": account_id,
         "account_type": account_type,
@@ -2176,10 +2820,13 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
         "preferred_mode": preferred_mode,
         "effective_mode": effective_mode,
         "fallback": fallback,
-        "qmt_dir": (WEB_CONFIG.account_config(account_id=account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key) or {}).get("qmt_dir", ""),
+        "qmt_dir": (config or {}).get("qmt_dir", ""),
         "data_provider": account_key == (WEB_CONFIG.data_provider_account_key() if WEB_CONFIG else ""),
         "ready": advanced_ready if effective_mode == "lttx" else ctypes_ready,
         "status": selected,
+        "market_routing_enabled": parse_config_bool((market_config or {}).get("market_routing_enabled"), False),
+        "market_routing_ready": market_routing_ready,
+        "market_routes": market_route_statuses,
         "modes": {
             "ctypes": {"ready": ctypes_ready, "status": ctypes_status},
             "lttx": {
@@ -2486,18 +3133,30 @@ def route_external_lttx_request(msg):
     timeout = float(params.get("timeout") or msg.get("timeout") or 12.0)
     if action.startswith("xttrader."):
         account_id = account_id or configured_default_account_id()
-        route = account_request(
-            account_id,
-            params.get("bridge_id"),
-            requested_channel,
-            action,
-            params,
-            default_channel=default_channel,
-            timeout=timeout,
-            mark_offline_on_timeout=True,
-            account_type=account_type,
-            account_key=account_key,
-        )
+        if action == "xttrader.order_stock_batch":
+            route = account_batch_order_request(
+                account_id,
+                params.get("bridge_id"),
+                requested_channel,
+                params,
+                default_channel=default_channel,
+                timeout=timeout,
+                account_type=account_type,
+                account_key=account_key,
+            )
+        else:
+            route = account_request(
+                account_id,
+                params.get("bridge_id"),
+                requested_channel,
+                action,
+                params,
+                default_channel=default_channel,
+                timeout=timeout,
+                mark_offline_on_timeout=True,
+                account_type=account_type,
+                account_key=account_key,
+            )
         meta = dict(route)
         meta.pop("result", None)
         meta["route"] = "account"
@@ -2832,6 +3491,21 @@ class RuntimeVersionRegistry(object):
             "core_version": str(version or "").strip(),
             "source": source,
             "mode": str(mode or "").strip(),
+            "runtime_mode": self._first_value(
+                runtime,
+                status,
+                keys=("runtime_mode", "qmt_runtime_mode", "transport_mode"),
+            ),
+            "entry_version": self._first_value(
+                runtime,
+                status,
+                keys=("entry_version", "runtime_entry_version", "qmt_runtime_entry_version"),
+            ),
+            "entry_script": self._first_value(
+                runtime,
+                status,
+                keys=("entry_script", "qmt_runtime_entry_script"),
+            ),
             "bridge": self._first_value(runtime, status, keys=("bridge",)),
             "account_id": self._first_value(runtime, status, keys=("account_id",)),
             "pid": self._first_value(runtime, status, keys=("pid",)),
@@ -3904,6 +4578,7 @@ def qmt_entry_manual_update_info(entry_files=None, required=False, reason=""):
         ),
         "mode_files": {
             "通用模式": ["CFQUANT_CTYPE_ALL_LOWLAT.py"],
+            "极致模式": ["CFQUANT_LITE.py"],
             "高级模式": ["CFQUANT.py", "CFQUANT_TRADE_LOWLAT.py"],
         },
     }
@@ -4720,7 +5395,7 @@ class CfquantUpdater(object):
         if not self._looks_like_core(path):
             raise RuntimeError("核心目录结构不完整: %s" % path)
         entries = os.listdir(path)
-        if "CFQUANT.py" in entries or "CFQUANT_TRADE_LOWLAT.py" in entries:
+        if any(name in entries for name in QMT_ENTRY_SCRIPT_NAMES):
             raise RuntimeError("源码核心目录包含入口脚本，已拒绝覆盖")
 
     def _copy_core(self, source_core, target_core):
@@ -5430,7 +6105,7 @@ def write_qmt_bridge_identity(row):
         }
         path = os.path.join(core_dir, QMT_BRIDGE_CONFIG_FILENAME)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+            json.dump(payload, f, ensure_ascii=True, indent=2, sort_keys=True)
         result.update({
             "written": True,
             "path": path,
@@ -5446,6 +6121,106 @@ def write_qmt_bridge_identity(row):
         return result
 
 
+def write_qmt_market_bridge_identities(row):
+    row = row or {}
+    if not parse_config_bool(row.get("market_routing_enabled"), False):
+        return []
+    account_id = str(row.get("account_id") or "").strip()
+    account_type = normalize_account_type(row.get("account_type") or "STOCK")
+    account_key = str(row.get("account_key") or account_key_for(account_id, account_type, row.get("bridge_id"))).strip()
+    parent_bridge_id = normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID)
+    routes = normalize_market_bridge_config(
+        row.get("market_bridges") or {},
+        account_id=account_id,
+        account_type=account_type,
+        parent_bridge_id=parent_bridge_id,
+        enabled=True,
+    )
+    accounts = [{
+        "account_key": account_key,
+        "account_id": account_id,
+        "account_type": account_type,
+        "account_type_label": account_type_label(account_type),
+        "display_name": str(row.get("display_name") or ""),
+        "data_provider": bool(row.get("data_provider")),
+    }]
+    results = []
+    for market, route in routes.items():
+        if route.get("enabled", True) is False:
+            continue
+        bridge_id = normalize_bridge_id(route.get("bridge_id") or "")
+        qmt_dir = normalize_optional_path(route.get("qmt_dir"))
+        filename = str(route.get("config_filename") or (MARKET_ROUTE_CONFIG_FILENAME_TEMPLATE % market))
+        result = {
+            "written": False,
+            "market": market,
+            "bridge_id": bridge_id,
+            "parent_bridge_id": parent_bridge_id,
+            "account_id": account_id,
+            "account_type": account_type,
+            "account_key": account_key,
+            "qmt_dir": qmt_dir,
+            "path": "",
+            "error": "",
+            "warning": "",
+        }
+        if not bridge_id:
+            result["warning"] = "market bridge_id is empty"
+            results.append(result)
+            continue
+        if not qmt_dir:
+            result["warning"] = "market QMT dir is empty"
+            results.append(result)
+            continue
+        try:
+            target = UPDATER._target_paths(qmt_dir) if UPDATER is not None else {"python_dir": qmt_dir, "script_dir": ""}
+            core_dir = normalize_optional_path(target.get("python_dir") or qmt_dir)
+            if not core_dir or not os.path.isdir(core_dir):
+                result["error"] = "QMT core dir does not exist: %s" % (core_dir or qmt_dir)
+                results.append(result)
+                continue
+            channels = bridge_channels(bridge_id)
+            payload = {
+                "config_version": 3,
+                "bridge_id": bridge_id,
+                "account_id": account_id,
+                "account_type": account_type,
+                "account_key": account_key,
+                "accounts": accounts,
+                "mode": normalize_transport_mode(row.get("mode") or "ctypes"),
+                "pipe_name": normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
+                "channels": channels,
+                "market": market,
+                "market_role": "trade",
+                "market_route_parent_bridge_id": parent_bridge_id,
+                "market_routing_enabled": True,
+                "qmt_log_language": WEB_CONFIG.qmt_log_language() if WEB_CONFIG is not None else "zh",
+                "qmt_log_enabled": WEB_CONFIG.qmt_log_enabled() if WEB_CONFIG is not None else True,
+                "updated_at": time.time(),
+                "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "source": "cfquant_web_account_market_binding",
+            }
+            path = os.path.join(core_dir, filename)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=True, indent=2, sort_keys=True)
+            result.update({
+                "written": True,
+                "path": path,
+                "core_dir": core_dir,
+                "script_dir": normalize_optional_path(target.get("script_dir")),
+                "channels": channels,
+                "accounts": accounts,
+            })
+        except Exception as e:
+            result["error"] = str(e)
+            safe_print(
+                "cfquant QMT market bridge identity write failed market=%s bridge_id=%s qmt_dir=%s error=%s"
+                % (market, bridge_id, qmt_dir, e)
+            )
+        results.append(result)
+    return results
+
+
 def sync_qmt_bridge_identities():
     results = []
     try:
@@ -5453,20 +6228,40 @@ def sync_qmt_bridge_identities():
         for row in configs.values():
             if not isinstance(row, dict):
                 continue
-            if not normalize_optional_path(row.get("qmt_dir") or row.get("python_dir")):
+            has_main_qmt_dir = bool(normalize_optional_path(row.get("qmt_dir") or row.get("python_dir")))
+            has_market_qmt_dir = any(
+                normalize_optional_path((route or {}).get("qmt_dir"))
+                for route in (row.get("market_bridges") or {}).values()
+                if isinstance(route, dict)
+            )
+            if not has_main_qmt_dir and not has_market_qmt_dir:
                 continue
-            result = write_qmt_bridge_identity(row)
-            results.append(result)
-            if result.get("written"):
-                safe_print(
-                    "cfquant QMT bridge identity synced bridge_id=%s path=%s"
-                    % (result.get("bridge_id"), result.get("path"))
-                )
-            elif result.get("error"):
-                safe_print(
-                    "cfquant QMT bridge identity sync failed bridge_id=%s error=%s"
-                    % (result.get("bridge_id"), result.get("error"))
-                )
+            if has_main_qmt_dir:
+                result = write_qmt_bridge_identity(row)
+                results.append(result)
+                if result.get("written"):
+                    safe_print(
+                        "cfquant QMT bridge identity synced bridge_id=%s path=%s"
+                        % (result.get("bridge_id"), result.get("path"))
+                    )
+                elif result.get("error"):
+                    safe_print(
+                        "cfquant QMT bridge identity sync failed bridge_id=%s error=%s"
+                        % (result.get("bridge_id"), result.get("error"))
+                    )
+            market_results = write_qmt_market_bridge_identities(row)
+            results.extend(market_results)
+            for market_result in market_results:
+                if market_result.get("written"):
+                    safe_print(
+                        "cfquant QMT market bridge identity synced market=%s bridge_id=%s path=%s"
+                        % (market_result.get("market"), market_result.get("bridge_id"), market_result.get("path"))
+                    )
+                elif market_result.get("error"):
+                    safe_print(
+                        "cfquant QMT market bridge identity sync failed market=%s bridge_id=%s error=%s"
+                        % (market_result.get("market"), market_result.get("bridge_id"), market_result.get("error"))
+                    )
         return results
     except Exception as e:
         safe_print("cfquant QMT bridge identity sync failed: %s" % e)
@@ -5828,7 +6623,7 @@ def normalize_channel(value, default="normal"):
 
 def web_request_channel(value=None, default="normal"):
     default = normalize_channel(default, "normal")
-    if WEB_CONFIG.transport_mode() == "ctypes":
+    if is_ctypes_transport_mode(WEB_CONFIG.transport_mode()):
         return default
     return normalize_channel(value, default)
 
@@ -6474,6 +7269,7 @@ def submit_order(body):
         "mode": route["mode"],
         "fallback": route["fallback"],
         "fallback_reason": route["fallback_reason"],
+        "market_route": route.get("market_route") or {},
         "result": route["result"],
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
         "order_remark": remark,
@@ -6524,11 +7320,10 @@ def submit_batch_orders(body):
         "order_remark": body.get("order_remark") or "cfquant_batch_%s" % int(time.time() * 1000),
     }
     started = time.perf_counter()
-    route = account_request(
+    route = account_batch_order_request(
         account_id,
         bridge_id,
         body.get("channel"),
-        "xttrader.order_stock_batch",
         params,
         default_channel="trade",
         timeout=max(12.0, len(orders) * 3.0),
@@ -6541,6 +7336,7 @@ def submit_batch_orders(body):
         "mode": route["mode"],
         "fallback": route["fallback"],
         "fallback_reason": route["fallback_reason"],
+        "market_route": route.get("market_route") or {},
         "account_id": account_id,
         "account_type": account_type,
         "account_key": account_key or account_key_for(account_id, account_type, bridge_id),
@@ -6614,12 +7410,23 @@ def delete_bridge_config(body):
     }
 
 
+def save_user_profile(body):
+    body = body or {}
+    profile = WEB_CONFIG.set_user_profile(
+        display_name=body.get("display_name") if "display_name" in body else None,
+        avatar_url=body.get("avatar_url") if "avatar_url" in body else None,
+    )
+    return user_profile_response(profile)
+
+
 def save_account_pair(body):
+    display_name = (body or {}).get("display_name") if "display_name" in (body or {}) else (body or {}).get("account_name")
     row = WEB_CONFIG.save_pair(
         (body or {}).get("account_id"),
         (body or {}).get("bridge_id"),
         account_type=(body or {}).get("account_type") or "STOCK",
         account_key=(body or {}).get("account_key"),
+        display_name=display_name,
     )
     STATUS_MONITOR.wake()
     return {
@@ -6662,18 +7469,25 @@ def save_account_runtime_config(body):
     account_id = str(body.get("account_id") or "").strip()
     account_type = normalize_account_type(body.get("account_type") or "STOCK")
     bridge_id = body.get("bridge_id")
+    display_name = body.get("display_name") if "display_name" in body else body.get("account_name")
     qmt_dir = body.get("qmt_dir") or body.get("python_dir")
     mode = body.get("mode") or body.get("transport_mode") or "ctypes"
+    market_bridges = body.get("market_bridges") if "market_bridges" in body else body.get("market_routes") if "market_routes" in body else None
+    market_routing_enabled = body.get("market_routing_enabled") if "market_routing_enabled" in body else None
     row = WEB_CONFIG.save_account_config(
         account_id=account_id,
         account_type=account_type,
         bridge_id=bridge_id,
+        display_name=display_name,
         qmt_dir=qmt_dir,
         mode=mode,
         data_provider=parse_bool(body.get("data_provider")),
         enabled=body.get("enabled", True) is not False,
+        market_routing_enabled=market_routing_enabled,
+        market_bridges=market_bridges,
     )
     identity = write_qmt_bridge_identity(row)
+    identity["market_identities"] = write_qmt_market_bridge_identities(row)
     STATUS_MONITOR.wake()
     CALLBACKS.refresh_channels(callback_channels())
     return {
@@ -6732,6 +7546,7 @@ def initialize_web_setup(body):
     body = body or {}
     account_id = str(body.get("account_id") or DEFAULT_ACCOUNT_ID).strip()
     account_type = normalize_account_type(body.get("account_type") or "STOCK")
+    display_name = body.get("display_name") if "display_name" in body else body.get("account_name")
     if not account_id:
         raise ValueError("account_id is required")
     auth_info = WEB_CONFIG.web_auth_info(include_username=True)
@@ -6760,12 +7575,16 @@ def initialize_web_setup(body):
         account_id=account_id,
         account_type=account_type,
         bridge_id=body.get("bridge_id"),
+        display_name=display_name,
         qmt_dir=body.get("qmt_dir") or body.get("python_dir"),
         mode=body.get("mode") or "ctypes",
         data_provider=True,
         enabled=True,
+        market_routing_enabled=body.get("market_routing_enabled") if "market_routing_enabled" in body else None,
+        market_bridges=body.get("market_bridges") if "market_bridges" in body else body.get("market_routes") if "market_routes" in body else None,
     )
     identity = write_qmt_bridge_identity(row)
+    identity["market_identities"] = write_qmt_market_bridge_identities(row)
     runtime = ensure_account_runtime(row["mode"])
     web_auth = None
     server_access = None
@@ -7104,7 +7923,7 @@ def save_transport(body):
     return {
         "transport": info,
         "client": transport_info()["client"],
-        "readiness": _advanced_mode_readiness(bridge_id) if mode == "lttx" else {"ready": True, "mode": "ctypes"},
+        "readiness": _advanced_mode_readiness(bridge_id) if mode == "lttx" else {"ready": True, "mode": mode},
         "pipe_hub": hub,
     }
 
@@ -7355,7 +8174,7 @@ def runtime_probe_modes(bridge_id=None):
         modes.append("lttx")
     if not modes:
         modes.append(default_runtime_client_mode())
-    if "ctypes" not in modes:
+    if not any(is_ctypes_transport_mode(item) for item in modes):
         modes.append("ctypes")
     return modes
 
@@ -7365,7 +8184,7 @@ def refresh_runtime_version_report(bridge_id=None, timeout=1.6):
     errors = []
     read_lttx_runtime_report(bridge_id)
     for mode in runtime_probe_modes(bridge_id):
-        if mode == "ctypes":
+        if is_ctypes_transport_mode(mode):
             try:
                 if not PIPE_HUB.status().get("running"):
                     errors.append("ctypes: PipeHub 未运行")
@@ -8246,6 +9065,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             self._handle_ws_callbacks(parsed)
         elif parsed.path == "/ws/quotes":
             self._handle_ws_quotes(parsed)
+        elif parsed.path.startswith("/media/"):
+            self._serve_runtime_media(parsed.path)
         elif parsed.path.startswith("/api/"):
             self._handle_api_get(parsed)
         else:
@@ -8285,6 +9106,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         if not self._authorized(parsed):
             self._write_json(fail("invalid credentials", 401), status=401)
             return
+        if parsed.path == "/api/user-profile/avatar":
+            self._handle_avatar_upload(parsed)
+            return
         if parsed.path == "/api/updates/upload":
             self._handle_update_upload(parsed)
             return
@@ -8317,6 +9141,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(result))
                 if reload_requested:
                     schedule_web_reload(self.server, result["reload"])
+            elif parsed.path == "/api/user-profile":
+                self._write_json(ok(save_user_profile(body)))
             elif parsed.path == "/api/transport":
                 self._write_json(ok(save_transport(body)))
             elif parsed.path == "/api/pipe-hub/start":
@@ -8571,6 +9397,46 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._write_json(fail(e, 400), status=400)
 
+    def _handle_avatar_upload(self, parsed):
+        try:
+            content_type = self.headers.get("Content-Type") or ""
+            if "multipart/form-data" not in content_type.lower():
+                self._write_json(fail("multipart/form-data is required", 400), status=400)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0:
+                self._write_json(fail("empty upload", 400), status=400)
+                return
+            if length > AVATAR_UPLOAD_MAX_BYTES:
+                self._write_json(fail("avatar upload too large: %s bytes" % length, 400), status=400)
+                return
+            raw = self.rfile.read(length)
+            fields, files = self._parse_multipart(content_type, raw)
+            file_item = files.get("file") or files.get("avatar")
+            if not file_item:
+                self._write_json(fail("file is required", 400), status=400)
+                return
+            content = file_item.get("content") or b""
+            if not content:
+                self._write_json(fail("empty avatar file", 400), status=400)
+                return
+            ext = detect_avatar_extension(file_item.get("filename"), file_item.get("content_type"), content)
+            os.makedirs(RUNTIME_AVATAR_DIR, exist_ok=True)
+            filename = "avatar-%s-%s%s" % (int(time.time()), secrets.token_hex(6), ext)
+            full_path = os.path.abspath(os.path.join(RUNTIME_AVATAR_DIR, filename))
+            avatar_root = os.path.abspath(RUNTIME_AVATAR_DIR)
+            if os.path.commonpath([avatar_root, full_path]) != avatar_root:
+                raise ValueError("invalid avatar path")
+            with open(full_path, "wb") as f:
+                f.write(content)
+            profile = WEB_CONFIG.set_user_profile(
+                display_name=fields.get("display_name") if "display_name" in fields else None,
+                avatar_url=AVATAR_UPLOAD_URL_PREFIX + filename,
+            )
+            self._write_json(ok(user_profile_response(profile)))
+        except Exception as e:
+            self._write_json(fail(e, 400), status=400)
+
     def _parse_multipart(self, content_type, raw):
         header = "Content-Type: %s\r\nMIME-Version: 1.0\r\n\r\n" % content_type
         message = email.parser.BytesParser(policy=email.policy.default).parsebytes(header.encode("utf-8") + raw)
@@ -8588,7 +9454,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             filename = part.get_filename()
             payload = part.get_payload(decode=True) or b""
             if filename:
-                files[name] = {"filename": filename, "content": payload}
+                files[name] = {"filename": filename, "content": payload, "content_type": part.get_content_type()}
             else:
                 charset = part.get_content_charset() or "utf-8"
                 fields[name] = payload.decode(charset, errors="replace")
@@ -8629,6 +9495,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     "api_key": WEB_CONFIG.api_key_info(include_secret=True),
                     "server_access": server_access_info(include_auth_details=True),
                     "web_auth": WEB_CONFIG.web_auth_info(include_username=True),
+                    "user_profile": user_profile_response(),
                     "transport": WEB_CONFIG.transport_info(),
                     "pipe_hub": PIPE_HUB.status(),
                     "log_cleanup": log_cleanup_info(),
@@ -8639,6 +9506,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(api_key_info()))
             elif parsed.path == "/api/server-access":
                 self._write_json(ok(server_access_info()))
+            elif parsed.path == "/api/user-profile":
+                self._write_json(ok(user_profile_response()))
             elif parsed.path == "/api/transport":
                 self._write_json(ok(transport_info()))
             elif parsed.path == "/api/pipe-hub":
@@ -8972,6 +9841,40 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError) as e:
             safe_print("client disconnected while writing static response: %s" % e)
 
+    def _serve_runtime_media(self, path):
+        path = posixpath.normpath(urllib.parse.unquote(path or ""))
+        if not path.startswith(AVATAR_UPLOAD_URL_PREFIX):
+            self._write_json(fail("not found", 404), status=404)
+            return
+        filename = posixpath.basename(path)
+        if not filename or filename != path[len(AVATAR_UPLOAD_URL_PREFIX):] or not re.match(r"^[A-Za-z0-9_.-]+$", filename):
+            self._write_json(fail("forbidden", 403), status=403)
+            return
+        if os.path.splitext(filename)[1].lower() not in AVATAR_UPLOAD_EXTENSIONS:
+            self._write_json(fail("forbidden", 403), status=403)
+            return
+        full_path = os.path.abspath(os.path.join(RUNTIME_AVATAR_DIR, filename))
+        avatar_root = os.path.abspath(RUNTIME_AVATAR_DIR)
+        if os.path.commonpath([avatar_root, full_path]) != avatar_root:
+            self._write_json(fail("forbidden", 403), status=403)
+            return
+        if not os.path.isfile(full_path):
+            self._write_json(fail("not found", 404), status=404)
+            return
+        content_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
+        with open(full_path, "rb") as f:
+            data = f.read()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError) as e:
+            safe_print("client disconnected while writing media response: %s" % e)
+
     def _write_json(self, payload, status=200, extra_headers=None):
         raw = json.dumps(to_jsonable(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         try:
@@ -9051,8 +9954,9 @@ def main(argv=None):
         configured_modes = configured_runtime_modes()
         if "lttx" in configured_modes:
             # 高级模式故障时需要立即回退到 ctypes，因此即使没有独立通用账号也要启动 PipeHub。
-            configured_modes.add("ctypes")
-        if "ctypes" in configured_modes:
+            if not any(is_ctypes_transport_mode(mode) for mode in configured_modes):
+                configured_modes.add("ctypes")
+        if any(is_ctypes_transport_mode(mode) for mode in configured_modes):
             try:
                 safe_print("cfquant ctypes 通用版模式已启用，正在启动 PipeHub")
                 PIPE_HUB.start()
