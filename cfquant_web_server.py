@@ -59,7 +59,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260829_01"
+WEB_VERSION = "web_20260831_01"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
@@ -228,6 +228,10 @@ CALLBACK_EVENT_CHANNEL = CHANNELS["callback"]
 STATUS_CHECK_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_INTERVAL", "15"))
 STATUS_PROBE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_PROBE_TIMEOUT", "8"))
 RUNTIME_REPORT_TTL_SECONDS = float(os.environ.get("CFQUANT_QMT_RUNTIME_REPORT_TTL", "75"))
+QMT_RUNTIME_VERSION_FILE = os.environ.get("CFQUANT_QMT_RUNTIME_VERSION_FILE") or os.path.join(
+    RUNTIME_STATUS_DIR,
+    "cfquant_qmt_runtime_versions.json",
+)
 ACCOUNT_CACHE_REFRESH_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "5"))
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "30"))
 UPDATE_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_UPDATE_UPLOAD_MAX_BYTES", str(80 * 1024 * 1024)))
@@ -2723,7 +2727,7 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
             "ready": False,
             "missing": [],
             "skipped": True,
-            "reason": "当前账号为通用模式，LTtx 不参与状态探测",
+            "reason": "当前账号为通用/极致模式，请求路由不走 LTtx；LTtx 仅用于自动发现和兼容服务",
             "status": {},
         }
     advanced_status = advanced.get("status") or {}
@@ -3390,10 +3394,12 @@ LTTX_WEB_ROUTE = LttxWebRouteServer()
 
 
 class RuntimeVersionRegistry(object):
-    def __init__(self, ttl_seconds=RUNTIME_REPORT_TTL_SECONDS):
+    def __init__(self, ttl_seconds=RUNTIME_REPORT_TTL_SECONDS, persist_file=None):
         self.ttl_seconds = float(ttl_seconds)
+        self.persist_file = os.path.abspath(persist_file or QMT_RUNTIME_VERSION_FILE)
         self._lock = threading.RLock()
         self._reports = {}
+        self._load_persisted()
 
     def update_from_status(self, bridge_id, channel_key, status, mode="", source="cfquant.status"):
         if not isinstance(status, dict):
@@ -3461,6 +3467,12 @@ class RuntimeVersionRegistry(object):
         latest["stale"] = age > self.ttl_seconds
         latest["reported"] = not latest["stale"]
         latest["has_report"] = True
+        latest["saved"] = True
+        latest["saved_version"] = latest.get("version") or ""
+        latest["saved_core_version"] = latest.get("core_version") or latest.get("version") or ""
+        latest["saved_reported_at"] = latest.get("reported_at") or 0
+        latest["saved_reported_at_text"] = latest.get("reported_at_text") or ""
+        latest["persist_file"] = self.persist_file
         latest["message"] = (
             "QMT 运行时版本已上报"
             if latest["reported"] else
@@ -3476,7 +3488,53 @@ class RuntimeVersionRegistry(object):
         report["channel_key"] = channel_key
         with self._lock:
             self._reports[(bridge_id, channel_key)] = dict(report)
+            self._persist_locked()
         return dict(report)
+
+    def _load_persisted(self):
+        try:
+            if not os.path.isfile(self.persist_file):
+                return
+            with open(self.persist_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            rows = payload.get("reports") if isinstance(payload, dict) else []
+            if not isinstance(rows, list):
+                return
+            with self._lock:
+                for row in rows:
+                    if not isinstance(row, dict) or not row.get("version"):
+                        continue
+                    bridge_id = normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID)
+                    channel_key = str(row.get("channel_key") or row.get("request_channel") or "runtime").strip() or "runtime"
+                    item = dict(row)
+                    item["bridge_id"] = bridge_id
+                    item["channel_key"] = channel_key
+                    item["loaded_from_disk"] = True
+                    self._reports[(bridge_id, channel_key)] = item
+        except Exception as e:
+            safe_print("qmt runtime version persistence load failed: %s" % e)
+
+    def _persist_locked(self):
+        try:
+            os.makedirs(os.path.dirname(self.persist_file), exist_ok=True)
+            rows = sorted(
+                [dict(row) for row in self._reports.values() if row.get("version")],
+                key=lambda item: float(item.get("reported_at") or 0),
+                reverse=True,
+            )[:64]
+            now = time.time()
+            payload = {
+                "schema": "cfquant.qmt.runtime_versions",
+                "updated_at": now,
+                "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                "reports": rows,
+            }
+            temp_path = self.persist_file + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+            os.replace(temp_path, self.persist_file)
+        except Exception as e:
+            safe_print("qmt runtime version persistence write failed: %s" % e)
 
     def _build_report(self, bridge_id, channel_key, version, source, mode, runtime, status):
         now = time.time()
@@ -3534,6 +3592,12 @@ class RuntimeVersionRegistry(object):
             "age_seconds": None,
             "ttl_seconds": self.ttl_seconds,
             "reports": [],
+            "saved": False,
+            "saved_version": "",
+            "saved_core_version": "",
+            "saved_reported_at": 0,
+            "saved_reported_at_text": "",
+            "persist_file": self.persist_file,
             "message": "未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看",
         }
 
@@ -4660,6 +4724,10 @@ class CfquantUpdater(object):
             "runtime_reported": False,
             "runtime_report": RUNTIME_VERSIONS.latest(bridge_id),
             "file_version": "",
+            "latest_qmt_core_version": "",
+            "qmt_builtin_version": "",
+            "qmt_saved_report": {},
+            "qmt_runtime_stale": False,
             "version_source": "",
             "last_update": {},
             "version_status": self._build_version_status(None, "", {}, repo_url, ref),
@@ -4677,11 +4745,16 @@ class CfquantUpdater(object):
             file_version = self._read_version(target["current_core"])
             runtime_report = refresh_runtime_version_report(bridge_id)
             runtime_version = runtime_report.get("version") if runtime_report.get("reported") else ""
+            latest_qmt_version = runtime_report.get("version") if runtime_report.get("has_report") else ""
             result["file_version"] = file_version
             result["runtime_report"] = runtime_report
             result["runtime_reported"] = bool(runtime_report.get("reported"))
             result["runtime_version"] = runtime_version
             result["current_version"] = runtime_version
+            result["latest_qmt_core_version"] = latest_qmt_version
+            result["qmt_builtin_version"] = latest_qmt_version
+            result["qmt_saved_report"] = runtime_report if runtime_report.get("has_report") else {}
+            result["qmt_runtime_stale"] = bool(runtime_report.get("stale"))
             result["version_source"] = "qmt_runtime" if runtime_version else ""
             result["last_update"] = self._read_install_meta(target["updates_dir"])
             result["version_status"] = self._build_version_status(
@@ -4944,18 +5017,27 @@ class CfquantUpdater(object):
         current = self._current_version_info(target, current_version, last_update, runtime_report=runtime_report, file_version=file_version)
         remote = self._remote_version_info(repo_url, ref)
         matches_remote = None
-        version_comparison = _compare_project_versions(current.get("version"), remote.get("version"))
+        compare_version = current.get("runtime_version") or current.get("latest_qmt_core_version") or ""
+        version_comparison = _compare_project_versions(compare_version, remote.get("version"))
+        runtime_comparison = _compare_project_versions(current.get("runtime_version"), remote.get("version"))
+        saved_qmt_comparison = _compare_project_versions(current.get("latest_qmt_core_version"), remote.get("version"))
+        file_comparison = _compare_project_versions(current.get("file_version"), remote.get("version"))
         current_commit = (current.get("commit") or "").lower()
         remote_commit = (remote.get("commit") or "").lower()
         if current_commit and remote_commit:
             matches_remote = current_commit == remote_commit
-        elif remote.get("version") and current.get("version"):
+        elif remote.get("version") and compare_version:
             matches_remote = version_comparison == "same"
         return {
             "current": current,
             "remote": remote,
             "matches_remote": matches_remote,
             "comparison": version_comparison,
+            "runtime_comparison": runtime_comparison,
+            "saved_qmt_comparison": saved_qmt_comparison,
+            "file_comparison": file_comparison,
+            "compare_version": compare_version,
+            "compare_source": "qmt_runtime" if current.get("runtime_version") else ("qmt_saved_report" if current.get("latest_qmt_core_version") else ""),
         }
 
     def _current_version_info(self, target, current_version, last_update, runtime_report=None, file_version=""):
@@ -4972,12 +5054,17 @@ class CfquantUpdater(object):
         updated_at_text = str(last_update.get("updated_at_text") or "").strip()
         runtime_version = str(current_version or "").strip()
         runtime_reported = bool(runtime_report.get("reported") and runtime_report.get("version"))
+        latest_qmt_core_version = str(runtime_report.get("version") or "").strip() if runtime_report.get("has_report") else ""
         return {
             "version": runtime_version,
             "runtime_version": runtime_version,
             "runtime_reported": runtime_reported,
             "runtime_report": runtime_report,
             "file_version": str(file_version or "").strip(),
+            "latest_qmt_core_version": latest_qmt_core_version,
+            "qmt_builtin_version": latest_qmt_core_version,
+            "qmt_saved_reported_at_text": runtime_report.get("reported_at_text") or "",
+            "qmt_runtime_stale": bool(runtime_report.get("stale")),
             "commit": commit,
             "short_commit": self._short_commit(commit),
             "source": "qmt_runtime" if runtime_reported else source_name,
@@ -6465,6 +6552,8 @@ def lttx_status():
         "managed_pids": managed_pids,
         "processes": processes,
         "entry": os.path.abspath(LTTX_ENTRY),
+        "purpose": "cfquant Python 库自动发现与 Web 统一路由入口",
+        "stop_policy": "Web 重启和定时重启保留 LTtx；完整退出 cfquant 时停止 LTtx",
         "checked_at": now,
         "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
     }
@@ -6548,8 +6637,44 @@ def start_lttx_server():
     }
 
 
-def stop_lttx_server():
+def ensure_lttx_started(reason="默认预启动"):
+    status = lttx_status()
+    if status.get("running"):
+        safe_print("cfquant %s，LTtx 已在运行，跳过自动启动" % reason)
+        return {
+            "started": False,
+            "reason": "LTtx port %s is already listening" % LTTX_PORT,
+            "status": status,
+        }
+    try:
+        result = start_lttx_server()
+        safe_print("cfquant %s，LTtx 自动启动结果=%s" % (reason, bool(result.get("started"))))
+        return result
+    except Exception as e:
+        safe_print("cfquant %s，LTtx 自动启动失败: %s" % (reason, e))
+        return {
+            "started": False,
+            "ok": False,
+            "error": str(e),
+            "status": status,
+        }
+
+
+def stop_lttx_server(full_exit=False):
     before = lttx_status()
+    allow_manual_stop = str(os.environ.get("CFQUANT_ALLOW_LTTX_MANUAL_STOP") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if not full_exit and not allow_manual_stop:
+        return {
+            "stopped": False,
+            "blocked": True,
+            "reason": "LTtx 会在 Web 重启和定时重启期间保持运行；请使用 stop_cfquant.bat 完整退出时再停止 LTtx。",
+            "status": before,
+        }
     if not before["running"]:
         return {
             "stopped": False,
@@ -7438,22 +7563,12 @@ def save_account_pair(body):
 def ensure_account_runtime(mode):
     mode = normalize_transport_mode(mode)
     results = {"mode": mode, "ctypes": None, "lttx": None}
+    results["lttx"] = ensure_lttx_started("账号运行配置预启动")
     try:
         results["ctypes"] = start_pipe_hub()
     except Exception as error:
         results["ctypes"] = {"ok": False, "error": str(error)}
         safe_print("cfquant account config ctypes runtime start failed: %s" % error)
-    if mode == "lttx":
-        try:
-            status = lttx_status()
-            results["lttx"] = (
-                {"started": False, "status": status}
-                if status.get("running")
-                else start_lttx_server()
-            )
-        except Exception as error:
-            results["lttx"] = {"ok": False, "error": str(error)}
-            safe_print("cfquant account config LTtx runtime start failed: %s" % error)
     try:
         CLIENTS.start(mode)
     except Exception as error:
@@ -7904,11 +8019,8 @@ def save_transport(body):
     mode = body.get("mode") or body.get("transport") or body.get("transport_mode")
     bridge_id = body.get("bridge_id") or DEFAULT_BRIDGE_ID
     mode = normalize_transport_mode(mode)
+    lttx = ensure_lttx_started("运行模式切换预启动")
     if mode == "lttx":
-        lttx_started = False
-        if not lttx_status().get("running"):
-            start_lttx_server()
-            lttx_started = True
         readiness = _advanced_mode_readiness(bridge_id)
         if not readiness["ready"]:
             missing = "、".join(readiness["missing"]) or "普通通道、交易通道"
@@ -7925,6 +8037,7 @@ def save_transport(body):
         "client": transport_info()["client"],
         "readiness": _advanced_mode_readiness(bridge_id) if mode == "lttx" else {"ready": True, "mode": mode},
         "pipe_hub": hub,
+        "lttx": lttx,
     }
 
 
@@ -8428,6 +8541,8 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
     local = _local_project_version_info()
     core_version = local.get("version") or current_core_version()
     qmt_runtime = refresh_runtime_version_report(bridge_id, timeout=1.2) if force else RUNTIME_VERSIONS.latest(bridge_id)
+    qmt_runtime_version = qmt_runtime.get("version") if qmt_runtime.get("reported") else ""
+    latest_qmt_core_version = qmt_runtime.get("version") if qmt_runtime.get("has_report") else ""
     data = {
         "current_version": core_version,
         "core_version": core_version,
@@ -8438,8 +8553,12 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
         "web_version": WEB_VERSION,
         "frontend_version": WEB_VERSION,
         "qmt_runtime": qmt_runtime,
-        "qmt_runtime_version": qmt_runtime.get("version") if qmt_runtime.get("reported") else "",
+        "qmt_runtime_version": qmt_runtime_version,
         "qmt_runtime_reported": bool(qmt_runtime.get("reported")),
+        "latest_qmt_core_version": latest_qmt_core_version,
+        "qmt_builtin_version": latest_qmt_core_version,
+        "qmt_saved_report": qmt_runtime if qmt_runtime.get("has_report") else {},
+        "qmt_runtime_stale": bool(qmt_runtime.get("stale")),
         "bridge_id": bridge_id,
         "repo_url": repo_url,
         "ref": ref,
@@ -8458,10 +8577,13 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
         data["comparison"] = comparison
         data["web_comparison"] = web_comparison
         data["update_available"] = comparison in ("newer", "different") or web_comparison in ("newer", "different")
-        qmt_runtime_version = data.get("qmt_runtime_version") or ""
         qmt_runtime_comparison = _compare_project_versions(qmt_runtime_version, remote.get("core_version") or remote.get("version")) if qmt_runtime_version else "unknown"
+        qmt_saved_comparison = _compare_project_versions(latest_qmt_core_version, remote.get("core_version") or remote.get("version")) if latest_qmt_core_version else "unknown"
+        qmt_version_comparison = qmt_runtime_comparison if qmt_runtime_version else qmt_saved_comparison
         data["qmt_runtime_comparison"] = qmt_runtime_comparison
-        data["qmt_update_available"] = qmt_runtime_comparison in ("newer", "different")
+        data["qmt_saved_comparison"] = qmt_saved_comparison
+        data["qmt_version_comparison"] = qmt_version_comparison
+        data["qmt_update_available"] = qmt_version_comparison in ("newer", "different")
     return data
 
 
@@ -9212,7 +9334,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/lttx/start":
                 self._write_json(ok(start_lttx_server()))
             elif parsed.path == "/api/lttx/stop":
-                self._write_json(ok(stop_lttx_server()))
+                self._write_json(ok(stop_lttx_server(full_exit=parse_bool(body.get("full_exit")))))
             elif parsed.path == "/api/bridges":
                 self._write_json(ok(save_bridge_config(body)))
             elif parsed.path == "/api/bridges/delete":
@@ -9789,24 +9911,52 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
 
     def _read_ws_frame(self):
         try:
-            header = self.rfile.read(2)
-            if not header:
+            header = self._recv_ws_bytes(2, allow_idle=True)
+            if header is None:
                 return None
+            if not header:
+                return 0x8, b""
             b1, b2 = header[0], header[1]
             opcode = b1 & 0x0F
             masked = b2 & 0x80
             length = b2 & 0x7F
             if length == 126:
-                length = int.from_bytes(self.rfile.read(2), "big")
+                raw_length = self._recv_ws_bytes(2)
+                if not raw_length:
+                    return 0x8, b""
+                length = int.from_bytes(raw_length, "big")
             elif length == 127:
-                length = int.from_bytes(self.rfile.read(8), "big")
-            mask = self.rfile.read(4) if masked else b""
-            payload = self.rfile.read(length) if length else b""
+                raw_length = self._recv_ws_bytes(8)
+                if not raw_length:
+                    return 0x8, b""
+                length = int.from_bytes(raw_length, "big")
+            mask = self._recv_ws_bytes(4) if masked else b""
+            if masked and not mask:
+                return 0x8, b""
+            payload = self._recv_ws_bytes(length) if length else b""
+            if length and not payload:
+                return 0x8, b""
             if masked:
                 payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
             return opcode, payload
         except socket.timeout:
             return None
+
+    def _recv_ws_bytes(self, length, allow_idle=False):
+        remaining = int(length or 0)
+        chunks = []
+        while remaining > 0:
+            try:
+                chunk = self.request.recv(remaining)
+            except socket.timeout:
+                if allow_idle and not chunks:
+                    return None
+                raise
+            if not chunk:
+                return b""
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
 
     def _send_ws_control(self, opcode, payload=b""):
         payload = payload or b""
@@ -9943,6 +10093,8 @@ def main(argv=None):
 
     if not os.path.isdir(STATIC_DIR):
         raise RuntimeError("static directory not found: %s" % STATIC_DIR)
+    configured_modes = configured_runtime_modes()
+    ensure_lttx_started("Web 启动预启动")
     global WEB_BOUND_HOST, WEB_BOUND_PORT
     WEB_BOUND_HOST = args.host
     WEB_BOUND_PORT = args.port
@@ -9951,7 +10103,6 @@ def main(argv=None):
         raise RuntimeError("cfquant web port %s is already listening, skip duplicate start" % args.port)
     server = ThreadingHTTPServer((args.host, args.port), CfquantWebHandler)
     try:
-        configured_modes = configured_runtime_modes()
         if "lttx" in configured_modes:
             # 高级模式故障时需要立即回退到 ctypes，因此即使没有独立通用账号也要启动 PipeHub。
             if not any(is_ctypes_transport_mode(mode) for mode in configured_modes):
@@ -9962,23 +10113,6 @@ def main(argv=None):
                 PIPE_HUB.start()
             except Exception as e:
                 safe_print("cfquant PipeHub 自动启动失败: %s" % e)
-        auto_start_lttx = str(os.environ.get("CFQUANT_AUTO_START_LTTX", "1")).strip().lower() not in (
-            "0",
-            "false",
-            "no",
-            "off",
-        )
-        if auto_start_lttx or "lttx" in configured_modes:
-            try:
-                lttx = lttx_status()
-                if not lttx.get("running"):
-                    started = start_lttx_server()
-                    reason = "高级模式已启用" if "lttx" in configured_modes else "默认预启动"
-                    safe_print("cfquant %s，LTtx 自动启动结果=%s" % (reason, bool(started.get("started"))))
-                else:
-                    safe_print("cfquant LTtx 已在运行，跳过自动启动")
-            except Exception as e:
-                safe_print("cfquant LTtx 自动启动失败: %s" % e)
         for client_mode in configured_modes:
             try:
                 CLIENTS.start(client_mode)

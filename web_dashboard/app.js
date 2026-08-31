@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260828_01';
+const FRONTEND_VERSION = 'web_20260831_01';
 
 const state = {
   accountId: '',
@@ -1058,7 +1058,28 @@ function qmtRuntimeLabel(report = {}) {
   return '未上报';
 }
 
+function qmtKnownVersion(info = {}, report = {}) {
+  return info.latest_qmt_core_version
+    || info.qmt_builtin_version
+    || report.saved_core_version
+    || report.saved_version
+    || (report.has_report ? report.version : '')
+    || '';
+}
+
+function qmtKnownDetail(report = {}) {
+  const reportedAt = report.reported_at_text || report.saved_reported_at_text || '--';
+  if (report.reported && report.version) {
+    return `当前在线，上报时间 ${reportedAt}。`;
+  }
+  if (report.has_report && report.version) {
+    return `最近一次上报 ${reportedAt}，当前上报已过期，仅用于版本识别和对比。`;
+  }
+  return '尚未保存 QMT 内置核心版本；运行 QMT 桥接脚本后会自动记录。';
+}
+
 function qmtRuntimeDetail(report = {}) {
+  const reportedAt = report.reported_at_text || report.saved_reported_at_text || '--';
   if (report.reported && report.version) {
     const source = report.source || 'QMT 运行时';
     const modeName = report.runtime_mode || report.mode || '';
@@ -1066,8 +1087,11 @@ function qmtRuntimeDetail(report = {}) {
     const entry = report.entry_version
       ? ` / 入口 ${report.entry_script || 'QMT 脚本'} ${report.entry_version}`
       : (report.entry_script ? ` / 入口 ${report.entry_script}` : '');
-    const checked = report.reported_at_text ? ` / ${report.reported_at_text}` : '';
+    const checked = reportedAt !== '--' ? ` / ${reportedAt}` : '';
     return `来源：${source}${mode}${entry}${checked}`;
+  }
+  if (report.has_report && report.version) {
+    return `最近已知版本 ${report.version}，上报时间 ${reportedAt}；当前未收到新的在线上报。`;
   }
   return report.message || '未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看。';
 }
@@ -1075,19 +1099,28 @@ function qmtRuntimeDetail(report = {}) {
 function renderProjectVersion(info) {
   state.versionInfo = info || state.versionInfo || null;
   const data = state.versionInfo || {};
-  const qmtRuntime = data.qmt_runtime || {};
+  const qmtRuntime = data.qmt_runtime || data.qmt_saved_report || {};
   const qmtReported = Boolean(qmtRuntime.reported && qmtRuntime.version);
-  const qmtVersion = qmtRuntimeLabel(qmtRuntime);
+  const qmtSavedVersion = qmtKnownVersion(data, qmtRuntime);
+  const qmtVersion = qmtReported
+    ? qmtRuntimeLabel(qmtRuntime)
+    : (qmtSavedVersion ? `历史 ${qmtSavedVersion}` : qmtRuntimeLabel(qmtRuntime));
   const webCoreVersion = data.core_version || data.current_version || (data.local && data.local.version) || '--';
   const serverFrontendVersion = data.frontend_version || data.web_version || '--';
   const browserFrontendVersion = FRONTEND_VERSION;
   const widget = $('versionWidget');
   const label = $('versionBadgeLabel');
+  const badgeMeta = $('versionBadgeMeta');
   const checkState = $('versionCheckState');
   const body = $('versionPopoverBody');
   const alert = $('versionAlert');
-  if (label) label.textContent = state.versionCheckInFlight ? '检查中...' : `QMT ${qmtVersion}`;
-  const qmtComparison = data.qmt_runtime_comparison || data.comparison;
+  if (label) label.textContent = state.versionCheckInFlight ? '检查版本...' : `QMT ${qmtSavedVersion || '--'}`;
+  if (badgeMeta) {
+    badgeMeta.textContent = qmtReported
+      ? '运行中'
+      : (qmtSavedVersion ? '历史上报' : '等待上报');
+  }
+  const qmtComparison = data.qmt_version_comparison || data.qmt_runtime_comparison || data.qmt_saved_comparison || data.comparison;
   const qmtClassData = { ...data, comparison: qmtComparison, update_available: data.qmt_update_available };
   if (widget) {
     widget.classList.remove(
@@ -1099,14 +1132,18 @@ function renderProjectVersion(info) {
       'status-checking',
       'status-unknown',
     );
-    widget.classList.add(state.versionCheckInFlight ? 'status-checking' : (qmtReported ? projectVersionClass(qmtClassData) : 'status-unknown'));
+    widget.classList.add(state.versionCheckInFlight ? 'status-checking' : (qmtSavedVersion ? projectVersionClass(qmtClassData) : 'status-unknown'));
   }
   const remote = data.remote || {};
   const remoteVersionText = remote.web_version
     ? `${remote.version || remote.core_version || '--'} / ${remote.web_version}`
     : (remote.version || remote.core_version || '--');
   const compareText = versionCompareText(qmtComparison, remote.error);
-  if (checkState) checkState.textContent = qmtReported ? compareText : '等待 QMT 上报';
+  if (checkState) {
+    checkState.textContent = state.versionCheckInFlight
+      ? '正在检查'
+      : (qmtSavedVersion ? compareText : '等待 QMT 上报');
+  }
   if (alert) {
     const showAlert = !!(remote.error && !state.versionCheckInFlight);
     alert.classList.toggle('hidden', !showAlert);
@@ -1118,6 +1155,7 @@ function renderProjectVersion(info) {
   const importedCoreVersion = data.imported_core_version || local.imported_version || '';
   const coreImportStale = Boolean(data.core_version_import_stale || local.import_stale);
   const runtimeDetail = qmtRuntimeDetail(qmtRuntime);
+  const savedDetail = qmtKnownDetail(qmtRuntime);
   const webDetail = coreImportStale
     ? `磁盘 ${webCoreVersion} / Web 进程 ${importedCoreVersion || '--'}，重启 Web 后端后生效`
     : `Web 后端 ${webCoreVersion} / 前端 ${browserFrontendVersion}`;
@@ -1129,16 +1167,21 @@ function renderProjectVersion(info) {
   const actionBusy = state.versionCheckInFlight || state.projectUpdateBusy || state.versionUpdateBusy;
   const updateDisabled = state.projectUpdateBusy ? ' disabled' : '';
   const recheckDisabled = state.versionCheckInFlight ? ' disabled' : '';
-  const displayCompareText = qmtReported ? compareText : '无法判断';
+  const displayCompareText = qmtSavedVersion ? compareText : '无法判断';
   const stateDetail = qmtReported
     ? (data.qmt_update_available ? '官网有不同的 QMT 核心版本，设置页可执行更新。' : '当前 QMT 运行时未发现需要更新。')
-    : '当前无法确认 QMT 内部实际加载版本，请先运行 QMT 桥接脚本。';
+    : (qmtSavedVersion ? 'QMT 暂未在线，正在使用最近一次保存的内置版本做对比。' : '当前无法确认 QMT 内部实际加载版本，请先运行 QMT 桥接脚本。');
   body.innerHTML = `
     <div class="version-quick-grid">
       <div class="version-quick-item ${qmtReported ? 'is-ok' : 'is-wait'}">
         <span>QMT 运行时</span>
         <strong>${esc(qmtVersion)}</strong>
         <small>${esc(runtimeDetail)}</small>
+      </div>
+      <div class="version-quick-item ${qmtSavedVersion ? 'is-ok' : 'is-wait'}">
+        <span>最近已知 QMT</span>
+        <strong>${esc(qmtSavedVersion || '--')}</strong>
+        <small>${esc(savedDetail)}</small>
       </div>
       <div class="version-quick-item">
         <span>${esc(remoteUpdateSourceLabel(remote))}</span>
@@ -1306,6 +1349,8 @@ function wireVersionBadge() {
   const widget = $('versionWidget');
   const badge = $('versionBadge');
   const popover = $('versionPopover');
+  let popoverPinned = false;
+  let closePopover = () => {};
   if (widget) {
     let closeTimer = null;
     const check = () => {
@@ -1317,7 +1362,13 @@ function wireVersionBadge() {
         closeTimer = null;
       }
       widget.classList.add('open');
+      if (badge) badge.setAttribute('aria-expanded', 'true');
       check();
+    };
+    closePopover = (force = false) => {
+      if (popoverPinned && !force) return;
+      widget.classList.remove('open');
+      if (badge) badge.setAttribute('aria-expanded', 'false');
     };
     const pointerInsideVersionArea = () => (
       widget.matches(':hover')
@@ -1329,7 +1380,7 @@ function wireVersionBadge() {
       if (closeTimer) window.clearTimeout(closeTimer);
       closeTimer = window.setTimeout(() => {
         if (pointerInsideVersionArea()) return;
-        widget.classList.remove('open');
+        closePopover();
       }, 260);
     };
     widget.addEventListener('mouseenter', openPopover);
@@ -1360,10 +1411,25 @@ function wireVersionBadge() {
     });
   }
   if (badge) {
-    badge.addEventListener('click', () => {
+    badge.addEventListener('click', (event) => {
+      event.preventDefault();
+      if (widget) {
+        popoverPinned = !popoverPinned;
+        if (popoverPinned) {
+          widget.classList.add('open');
+          badge.setAttribute('aria-expanded', 'true');
+        } else {
+          closePopover(true);
+        }
+      }
       refreshProjectVersion({ remote: true, force: true, log: true }).catch((error) => log('版本状态刷新失败', { error: error.message }));
     });
   }
+  document.addEventListener('click', (event) => {
+    if (!widget || widget.contains(event.target) || (popover && popover.contains(event.target))) return;
+    popoverPinned = false;
+    closePopover(true);
+  });
 }
 
 function webAuthEnabled() {
@@ -2583,7 +2649,7 @@ function renderTransport(info) {
   if (startLttxBtn) startLttxBtn.disabled = startLttxBtn.dataset.runtimeDisabled === 'true';
   if (stopLttxBtn) stopLttxBtn.disabled = stopLttxBtn.dataset.runtimeDisabled === 'true';
   const lttxLabel = $('lttxStatusLabel');
-  if (lttxLabel) lttxLabel.textContent = isCtypesTransportMode(currentMode) ? 'LTtx（高级模式）' : 'LTtx';
+  if (lttxLabel) lttxLabel.textContent = 'LTtx（库通信）';
   syncTransportChannelControls();
 }
 
@@ -2591,7 +2657,7 @@ function syncTopStatusDisplay() {
   const universal = isCtypesTransportMode(activeAccountMode());
   ['lttxStatus', 'normalStatus', 'tradeStatus'].forEach((id) => {
     const node = $(id);
-    if (node) node.style.display = universal ? 'none' : '';
+    if (node) node.style.display = universal && id !== 'lttxStatus' ? 'none' : '';
   });
 }
 
@@ -3512,19 +3578,37 @@ function renderUpdateVersionInfo(data) {
   const version = data && data.version_status ? data.version_status : {};
   const current = version.current || {};
   const remote = version.remote || {};
-  const report = data && data.runtime_report ? data.runtime_report : (current.runtime_report || {});
+  const report = (data && (data.runtime_report || data.qmt_saved_report))
+    || current.runtime_report
+    || current.qmt_saved_report
+    || {};
   const runtimeReported = Boolean((data && data.runtime_reported) || current.runtime_reported || (report.reported && report.version));
   const runtimeVersion = (data && data.runtime_version) || current.runtime_version || (report.reported ? report.version : '') || '';
+  const latestQmtVersion = (data && data.latest_qmt_core_version)
+    || current.latest_qmt_core_version
+    || current.qmt_builtin_version
+    || qmtKnownVersion(data || {}, report);
   const fileVersion = (data && data.file_version) || current.file_version || '';
-  const compareClass = runtimeReported ? updateCompareClass(version.matches_remote) : 'unknown';
-  const runtimeDetail = runtimeReported
-    ? qmtRuntimeDetail(report)
-    : (report.message || '未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看。');
+  const qmtComparison = version.qmt_version_comparison
+    || version.saved_qmt_comparison
+    || version.runtime_comparison
+    || (version.matches_remote === true ? 'same' : (version.matches_remote === false ? 'different' : 'unknown'));
+  const compareClass = projectUpdateCompareClass(qmtComparison, remote.error);
+  const runtimeDetail = qmtRuntimeDetail(report);
+  const savedDetail = qmtKnownDetail(report);
+  const compareSource = version.compare_source === 'qmt_runtime'
+    ? '基于当前 QMT 运行时上报版本判断。'
+    : (latestQmtVersion ? '基于系统保存的最近一次 QMT 内置版本判断。' : '没有 QMT 运行时或历史上报时，无法判断 QMT 内置版本。');
   box.innerHTML = `
     <div class="update-version-item">
       <span>QMT 运行时</span>
       <strong>${esc(runtimeVersion || (report.has_report ? '未运行' : '未上报'))}</strong>
       <small>${esc(runtimeDetail)}</small>
+    </div>
+    <div class="update-version-item">
+      <span>最近已知 QMT</span>
+      <strong>${esc(latestQmtVersion || '--')}</strong>
+      <small>${esc(savedDetail)}</small>
     </div>
     <div class="update-version-item">
       <span>磁盘核心</span>
@@ -3537,9 +3621,9 @@ function renderUpdateVersionInfo(data) {
       <small>${esc(remoteUpdateDetail(remote))}</small>
     </div>
     <div class="update-version-item update-version-compare ${compareClass}">
-      <span>运行时对比</span>
-      <strong>${esc(runtimeReported ? updateCompareText(version.matches_remote) : '无法判断')}</strong>
-      <small>${esc(runtimeReported ? '基于 QMT 运行时上报版本判断。' : '没有运行时上报时，不再用磁盘版本代替当前运行版本。')}</small>
+      <span>QMT 对比</span>
+      <strong>${esc(projectUpdateCompareText(qmtComparison, remote.error))}</strong>
+      <small>${esc(compareSource)}</small>
     </div>`;
 }
 
@@ -3594,9 +3678,14 @@ function renderProjectUpdateVersionInfo(data) {
     ? `${remote.version || remote.core_version || '--'} / ${remote.web_version}`
     : (remote.version || remote.core_version || '--');
   const currentVersion = version.current_version || local.version || data && data.current_version || '--';
+  const webVersion = version.web_version || version.frontend_version || '--';
+  const browserFrontendVersion = FRONTEND_VERSION;
   const localDetail = local.matches_readme === false
     ? `README 最新日志版本为 ${local.readme_version || '--'}，与核心版本不一致`
     : `来源：${local.source || '本地项目'}`;
+  const webDetail = webVersion !== browserFrontendVersion
+    ? `浏览器前端 ${browserFrontendVersion} / 服务端 ${webVersion}，建议强制刷新页面。`
+    : `浏览器前端与服务端静态资源一致。`;
   const remoteDetail = remoteUpdateDetail(remote);
   const compareClass = projectUpdateCompareClass(version.comparison, remote.error);
   box.innerHTML = `
@@ -3604,6 +3693,11 @@ function renderProjectUpdateVersionInfo(data) {
       <span>当前 Web 项目</span>
       <strong>${esc(currentVersion)}</strong>
       <small>${esc(localDetail)}</small>
+    </div>
+    <div class="update-version-item">
+      <span>Web 前端</span>
+      <strong>${esc(webVersion)}</strong>
+      <small>${esc(webDetail)}</small>
     </div>
     <div class="update-version-item">
       <span>${esc(remoteUpdateSourceLabel(remote))}</span>
@@ -3647,18 +3741,18 @@ function renderProjectUpdateStatus(data) {
     } else {
       const version = data.version_info || {};
       const remote = version.remote || {};
+      const compareText = version.comparison ? projectUpdateCompareText(version.comparison, remote.error) : '';
       const parts = [
-        `Web 项目：${data.ready ? '可更新' : '未就绪'}`,
-        data.target_dir ? `目录 ${data.target_dir}` : '',
+        data.ready ? 'Web 项目可更新' : 'Web 项目未就绪',
         data.current_version ? `版本 ${data.current_version}` : '',
-        version.comparison ? `版本对比 ${projectUpdateCompareText(version.comparison, remote.error)}` : '',
-        defaultOfficial ? `官网 ${defaultOfficial}` : '',
-        defaultRepo ? `GitHub 回退 ${defaultRepo}${defaultRef ? `#${defaultRef}` : ''}` : '',
+        compareText ? `对比 ${compareText}` : '',
         `备份 ${backups.length} 个`,
       ].filter(Boolean);
+      if (defaultOfficial) parts.push('官网优先');
+      if (defaultRepo && defaultRef) parts.push(`回退 ${defaultRef}`);
       if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
       if (data.warnings && data.warnings.length) parts.push(`提示：${data.warnings.join('；')}`);
-      status.textContent = parts.join('，');
+      status.textContent = parts.join(' · ');
       status.title = JSON.stringify(data, null, 2);
     }
   }
@@ -3834,22 +3928,26 @@ function renderUpdateStatus(data) {
       status.title = '';
     } else {
       const targets = data.targets || {};
+      const latestQmtVersion = data.latest_qmt_core_version || data.qmt_builtin_version || '';
+      const qmtCompare = data.version_status && data.version_status.qmt_version_comparison
+        ? projectUpdateCompareText(data.version_status.qmt_version_comparison, (data.version_status.remote || {}).error)
+        : '';
       const parts = [
         `${selectedAccount() || data.bridge_name || data.bridge_id || selectedBridge()}：${data.ready ? '可更新' : '未就绪'}`,
-        data.python_dir ? `核心目录 ${data.python_dir}` : '未配置 QMT 核心目录',
       ];
       const layoutText = updateLayoutText(targets.layout);
       if (layoutText) parts.push(layoutText);
-      if (!data.current_version) parts.push(data.runtime_reported ? '运行时版本为空' : '运行时未上报');
+      if (data.current_version) parts.push(`运行时 ${data.current_version}`);
+      else parts.push(data.runtime_reported ? '运行时版本为空' : '运行时未上报');
+      if (latestQmtVersion) parts.push(`已知 QMT ${latestQmtVersion}`);
       if (data.file_version) parts.push(`磁盘 ${data.file_version}`);
-      if (data.current_version) parts.push(`版本 ${data.current_version}`);
-      if (data.version_status) parts.push(`版本对比 ${updateCompareText(data.version_status.matches_remote)}`);
-      if (defaultOfficial) parts.push(`官网 ${defaultOfficial}`);
-      if (defaultRepo) parts.push(`GitHub 回退 ${defaultRepo}${defaultRef ? `#${defaultRef}` : ''}`);
+      if (qmtCompare) parts.push(`对比 ${qmtCompare}`);
       parts.push(`备份 ${backups.length} 个`);
+      if (defaultOfficial) parts.push('官网优先');
+      if (defaultRepo && defaultRef) parts.push(`回退 ${defaultRef}`);
       if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
       if (data.warnings && data.warnings.length) parts.push(`提示：${data.warnings.join('；')}`);
-      status.textContent = parts.join('，');
+      status.textContent = parts.join(' · ');
       status.title = JSON.stringify(data, null, 2);
     }
   }
@@ -5858,43 +5956,62 @@ function renderBridgeSelect(bridges) {
 function renderLttxStatus(data) {
   state.lttxStatus = data || null;
   const running = !!(data && data.running);
+  const managed = !!(data && data.managed);
   const active = shouldUseLttxStatus();
   const processes = data && Array.isArray(data.processes) ? data.processes : [];
   const processText = processes.map((item) => `${item.pid || ''} ${item.name || ''}`.trim()).filter(Boolean).join(', ');
-  const detail = data ? `${data.host}:${data.port} ${running ? '运行中' : '未运行'}${processText ? ` / ${processText}` : ''}` : '';
-  setStatus('lttxStatus', active && running, active ? detail : '通用模式未使用 LTtx，高级模式才需要 LTtx。');
+  const addressText = data ? `${data.host}:${data.port}` : '--';
+  const pidText = processes.map((item) => item.pid).filter(Boolean).join(', ')
+    || ((data && data.managed_pids || []).join(', '))
+    || (running ? '端口已监听' : '--');
+  const roleText = active ? '高级双桥 / 库入口' : '库入口 / 自动发现';
+  const policyText = '重启保留';
+  const detail = data ? [
+    `状态：${running ? '运行中' : '未运行'}`,
+    `地址：${addressText}`,
+    `PID：${pidText}`,
+    `本系统进程：${managed ? '是' : '未确认'}`,
+    `用途：cfquant Python 库自动发现与 Web 统一路由入口`,
+    `策略：Web 重启和定时重启保留 LTtx，完整退出时停止`,
+    processText ? `进程：${processText}` : '',
+  ] : ['LTtx 状态未知', '用途：cfquant Python 库自动发现与 Web 统一路由入口'];
+  setStatus('lttxStatus', running, detail);
+
+  const addressNode = $('lttxAddress');
+  const pidNode = $('lttxPid');
+  const libraryNode = $('lttxLibraryStatus');
+  const policyNode = $('lttxRestartPolicy');
+  if (addressNode) addressNode.textContent = addressText;
+  if (pidNode) pidNode.textContent = pidText;
+  if (libraryNode) libraryNode.textContent = running ? (managed ? roleText : '端口已监听') : '不可用';
+  if (policyNode) policyNode.textContent = running ? policyText : '启动补齐';
 
   const startBtn = $('lttxStartBtn');
   const stopBtn = $('lttxStopBtn');
   if (startBtn) {
-    startBtn.dataset.runtimeDisabled = (!active || (data && !data.can_start)) ? 'true' : 'false';
+    startBtn.dataset.runtimeDisabled = (data && !data.can_start) ? 'true' : 'false';
     startBtn.disabled = startBtn.dataset.runtimeDisabled === 'true';
   }
   if (stopBtn) {
-    stopBtn.dataset.runtimeDisabled = active && data && data.can_stop ? 'false' : 'true';
+    stopBtn.dataset.runtimeDisabled = 'true';
+    stopBtn.title = 'LTtx 在 Web 重启和定时重启时保持运行，完整退出 cfquant 时停止。';
     stopBtn.disabled = stopBtn.dataset.runtimeDisabled === 'true';
   }
 
   const runtime = $('lttxRuntime');
   if (!runtime) return;
-  if (!active) {
-    runtime.textContent = '当前为通用模式，LTtx 不参与请求路由。';
+  if (running && managed) {
+    runtime.textContent = `LTtx 运行中，cfquant Python 库可通过 ${addressText} 发现 Web 统一路由。Web 重启和定时重启会保留 LTtx。`;
+  } else if (running) {
+    runtime.textContent = `${addressText} 已监听，但无法确认是本系统启动的 LTtx；cfquant Python 库会尝试通过该端口发现 Web 统一路由。`;
   } else if (!data) {
     runtime.textContent = 'LTtx 状态未知';
-  } else if (!running) {
-    runtime.textContent = `LTtx 未运行，可通过网页或 cfquant\\start_cfquant.bat 启动。`;
-  } else if (data.can_stop) {
-    runtime.textContent = `LTtx 运行中，可管理 PID：${(data.managed_pids || []).join(', ') || '--'}。`;
   } else {
-    runtime.textContent = `2049 已监听，但无法确认是本系统启动的 LTtx，网页不会强制停止它。`;
+    runtime.textContent = `LTtx 未运行，cfquant Python 库自动发现不可用；可通过网页或 cfquant\\start_cfquant.bat 启动。`;
   }
 }
 
 async function refreshLttxStatus(options = {}) {
-  if (!shouldUseLttxStatus() && !options.force) {
-    renderLttxStatus({ running: false, can_start: false, can_stop: false, skipped: true });
-    return null;
-  }
   try {
     const data = await api('/api/lttx');
     renderLttxStatus(data);
@@ -6040,9 +6157,7 @@ async function startAuthenticatedApp() {
 }
 
 async function refreshStatus() {
-  const lttxPromise = shouldUseLttxStatus()
-    ? refreshLttxStatus({ log: false })
-    : Promise.resolve(null);
+  const lttxPromise = refreshLttxStatus({ log: false });
   const transportPromise = refreshTransport();
   try {
     const params = new URLSearchParams();
@@ -6108,11 +6223,6 @@ async function refreshStatus() {
 }
 
 async function startLttx() {
-  if (!shouldUseLttxStatus()) {
-    renderLttxStatus({ running: false, can_start: false, can_stop: false, skipped: true });
-    log('当前为通用模式，LTtx 不参与请求路由，不需要启动');
-    return;
-  }
   const startBtn = $('lttxStartBtn');
   const stopBtn = $('lttxStopBtn');
   if (startBtn) startBtn.disabled = true;
@@ -6129,26 +6239,8 @@ async function startLttx() {
 }
 
 async function stopLttx() {
-  if (!shouldUseLttxStatus()) {
-    renderLttxStatus({ running: false, can_start: false, can_stop: false, skipped: true });
-    log('当前为通用模式，LTtx 不参与请求路由，不需要停止');
-    return;
-  }
-  const confirmed = window.confirm('确认停止 LTtx 服务？停止后桥接通道会离线。');
-  if (!confirmed) return;
-  const startBtn = $('lttxStartBtn');
-  const stopBtn = $('lttxStopBtn');
-  if (startBtn) startBtn.disabled = true;
-  if (stopBtn) stopBtn.disabled = true;
-  try {
-    const data = await api('/api/lttx/stop', { method: 'POST', body: '{}' });
-    renderLttxStatus(data.status);
-    log(data.stopped ? 'LTtx 已停止' : 'LTtx 未运行', data);
-    await refreshStatus();
-  } catch (error) {
-    log('LTtx 停止失败', { error: error.message });
-    await refreshLttxStatus({ log: false });
-  }
+  await refreshLttxStatus({ log: false });
+  log('LTtx 会随 cfquant 完整退出停止，Web 重启和定时重启不会停止 LTtx');
 }
 
 function selectedAccount() {

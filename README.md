@@ -55,9 +55,9 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
 
 关键规则：
 
-- 通用模式不经过 LTtx，请求走 PipeHub named pipe。
+- 通用模式的 QMT 落地链路走 PipeHub named pipe；LTtx 只承担自动发现、统一 Web 路由入口和旧客户端兼容。
 - 极致模式同样走 PipeHub named pipe，但 QMT 入口脚本完全自包含，不需要导入 `cfquant` 包，特别适合国泰君安君弘君智 QMT 这类白名单限制较严格的环境。
-- 本地服务默认仍会启动 LTtx，方便高级模式、旧客户端和外部自动发现接入。
+- 本地服务启动时会检查并启动 LTtx，供 `cfquant` Python 库自动发现和进入 Web 统一路由；Web 重启或定时重启会保留 LTtx，完整退出才停止 LTtx。
 - 高级模式必须打开两个 QMT。不要在同一个 QMT 里同时运行 `CFQUANT.py` 和 `CFQUANT_TRADE_LOWLAT.py`。
 - 通用模式和高级模式里的普通 QMT 可以部署在同一个 QMT；高级模式的极速交易端需要单独打开另一个 QMT。
 - 账号配置为高级模式时，系统优先走高级通道；高级通道不可用时自动回退到该账号的 ctypes 通用桥。
@@ -70,21 +70,28 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
    D:\cfquant
    ```
 
-2. 双击运行：
+2. 首次运行前先安装依赖，避免缺少 Python 库导致启动脚本失败：
+
+   ```powershell
+   cd D:\cfquant
+   pip install -r requirements.txt
+   ```
+
+3. 双击运行：
 
    ```text
    start_cfquant.bat
    ```
 
-3. 打开 Web 控制台：
+4. 打开 Web 控制台：
 
    ```text
    http://127.0.0.1:8765/
    ```
 
-4. 首次打开网页后，按“新手初始化向导”完成账号、模式和 QMT 目录配置。
+5. 首次打开网页后，按“新手初始化向导”完成账号、模式和 QMT 目录配置。
 
-5. 在 QMT 中加载对应入口脚本，再回到网页验证资金、持仓、委托和行情。
+6. 在 QMT 中加载对应入口脚本，再回到网页验证资金、持仓、委托和行情。
 
 常用运维脚本：
 
@@ -174,17 +181,45 @@ cfquant/
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=cfquant%2Fcfquant&type=date&logscale=&legend=top-left">
+<a href="https://www.star-history.com/?repos=95ge%2Fcfquant&type=date&logscale=&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=cfquant/cfquant&type=date&theme=dark&logscale&legend=top-left&sealed_token=iFGQ63b-JL7rcQ3bv-UlXmsMAW95rAjE3bjA1LHsXyInKg-pmSpA7sAclt78HO3Su2ZjxRnkVtS-hSQ4_wj-1ZrD4gXBhzW3DraDo4vO8XyCbC9jIaanLw" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=cfquant/cfquant&type=date&logscale&legend=top-left&sealed_token=iFGQ63b-JL7rcQ3bv-UlXmsMAW95rAjE3bjA1LHsXyInKg-pmSpA7sAclt78HO3Su2ZjxRnkVtS-hSQ4_wj-1ZrD4gXBhzW3DraDo4vO8XyCbC9jIaanLw" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=cfquant/cfquant&type=date&logscale&legend=top-left&sealed_token=iFGQ63b-JL7rcQ3bv-UlXmsMAW95rAjE3bjA1LHsXyInKg-pmSpA7sAclt78HO3Su2ZjxRnkVtS-hSQ4_wj-1ZrD4gXBhzW3DraDo4vO8XyCbC9jIaanLw" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=95ge/cfquant&type=date&theme=dark&logscale&legend=top-left&sealed_token=YzI6x1kt7-3CytMo6tsckqxv0bxdPwH3FfQbKTBMESjGCg6uBSMTfK7vE5iasv-zw1izW7xBqv77ZlHZgR9-7RrYMN4hkaWteLTaW7bYcej5D2jDbyl9EQ" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=95ge/cfquant&type=date&logscale&legend=top-left&sealed_token=YzI6x1kt7-3CytMo6tsckqxv0bxdPwH3FfQbKTBMESjGCg6uBSMTfK7vE5iasv-zw1izW7xBqv77ZlHZgR9-7RrYMN4hkaWteLTaW7bYcej5D2jDbyl9EQ" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=95ge/cfquant&type=date&logscale&legend=top-left&sealed_token=YzI6x1kt7-3CytMo6tsckqxv0bxdPwH3FfQbKTBMESjGCg6uBSMTfK7vE5iasv-zw1izW7xBqv77ZlHZgR9-7RrYMN4hkaWteLTaW7bYcej5D2jDbyl9EQ" />
  </picture>
 </a>
 
 
 
+
+
 ## 版本日志
+
+### web_20260831_01
+
+- 优化 Web 控制台“设置 - 系统更新”页面：Web 项目更新和 QMT 核心更新分区展示，版本状态改为卡片化信息，操作区更适合扫读和回滚。
+- 优化左上角版本小组件：显示最近已知 QMT 内置核心版本，并区分“运行中”“历史上报”和“等待上报”。
+- Web 服务会把 QMT 最近一次运行时版本上报持久化到 `runtime/status/cfquant_qmt_runtime_versions.json`，重启后仍可用于识别和对比 QMT 内置版本。
+
+### web_20260830_02
+
+- Web 重启、项目更新重载和定时重启流程保留 LTtx，不再随 Web/PipeHub 一起停止再拉起；`stop_cfquant.bat` 作为完整退出仍会停止 LTtx。
+- Web 控制台顶部常显 `LTtx（库通信）` 状态，首页操作区显示 LTtx 地址、PID、`cfquant` 库可用状态和重启保留策略。
+- Web 端不再提供常规停止 LTtx 操作，避免影响外部 `cfquant` Python 库的自动发现与通信入口。
+
+### web_20260830_01
+
+- Web 服务启动时先检查并预启动 LTtx；保存通用、极致或高级模式配置时也会补充检查，确保自动发现、旧 LTtx 客户端和高级模式切换可用。
+- 通用/极致模式仍不通过 LTtx 处理请求路由，行情、查询、交易和状态探测继续走 PipeHub。
+- Web 控制台在通用/极致模式下也展示 LTtx 状态，并允许手动补启 LTtx，避免旧文案造成误解。
+
+### core_20260830_01
+
+- 修复 `cfquant.xttrader.query_stock_asset` 与原版 `xtquant` 不兼容的问题：服务端返回列表时，客户端会按原版行为取第一条并返回单个 `XtAsset` 对象，空列表返回 `None`。
+- `XtAsset` 新增 `account_id`、`account_type`、`cash`、`frozen_cash`、`market_value`、`total_asset`、`fetch_balance` 等 xtquant 常用字段映射，同时保留原始 `m_` 字段。
+- `XtOrder`、`XtTrade`、`XtPosition`、异步下单响应和异步撤单响应补充 xtquant 风格字段别名，查询列表接口仍保持列表返回。
+- `xtconstant` 补充信用、期货、期权、委托状态、方向和开平仓等常用常量；运行环境已安装原版 `xtquant` 时，会静默加载其余大写常量作为兼容兜底。
+- 已检查下单与撤单接口返回形态：同步下单仍返回 `order_id`，异步下单返回 `seq`，同步撤单返回 `cancel_result`；本次主要补齐异步回调对象字段别名。
 
 ### web_20260829_01
 
