@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260831_01';
+const FRONTEND_VERSION = 'web_20260902_05';
 
 const state = {
   accountId: '',
@@ -84,6 +84,7 @@ const state = {
   quoteRenderTimer: null,
   quoteSocketLogCount: 0,
   quoteSocketMessageCount: 0,
+  apiDebugBusy: false,
   onboardingStep: 'intro',
   onboardingDoneSteps: new Set(),
   lastLogKey: '',
@@ -93,6 +94,8 @@ const state = {
   statusRefreshInFlight: false,
   callbackRefreshInFlight: false,
   bindingStatusRefreshInFlight: false,
+  bindingVerifyBusyKey: '',
+  bindingNoticeTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -118,6 +121,10 @@ const DEFAULT_BUILTIN_AVATARS = [
 ];
 const DEFAULT_UPDATE_REPO_URL = 'https://github.com/95ge/cfquant.git';
 const DEFAULT_OFFICIAL_SITE_URL = 'https://cfquant.org';
+const API_DEBUG_TIMEOUT_MS = 18000;
+const API_DEBUG_QMT_TIMEOUT_SECONDS = 12;
+let mermaidRendererReady = false;
+let forceCloseVersionPopover = () => {};
 
 function normalizeTransportMode(mode) {
   const value = String(mode || 'ctypes').trim().toLowerCase();
@@ -182,8 +189,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/quotes/whole/subscribe',
     desc: '通过当前模式订阅全推行情。同一时间只允许一个全推订阅，成功后可通过 WebSocket 实时接收行情事件；通用模式由 ctypes 单桥统一转发。',
-    defaults: { channel: 'normal', markets: 'SH,SZ' },
-    fields: ['bridge_id', 'whole_quote_channel', 'markets'],
+    defaults: { channel: 'normal', markets: 'SH,SZ', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'whole_quote_channel', 'markets', 'timeout'],
   },
   {
     id: 'quote_latest',
@@ -202,8 +209,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/full-tick',
     desc: '查询指定证券的实时全推快照。通用模式走 ctypes 单桥， 高级模式按所选通道请求。',
-    defaults: { channel: 'trade', code_list: '000001.SZ,600000.SH' },
-    fields: ['bridge_id', 'channel', 'code_list'],
+    defaults: { channel: 'trade', code_list: '000001.SZ,600000.SH', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'code_list', 'timeout'],
   },
   {
     id: 'market_data',
@@ -212,8 +219,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/market',
     desc: '查询行情数据，字段、证券列表、周期和区间可配置。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
-    defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1' },
-    fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data'],
+    defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data', 'timeout'],
   },
   {
     id: 'market_data_ex',
@@ -222,8 +229,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/market-ex',
     desc: '调用 QMT get_market_data_ex，适合读取本地缓存行情数据。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
-    defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1' },
-    fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data'],
+    defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data', 'timeout'],
   },
   {
     id: 'quote_subscribe_single',
@@ -232,8 +239,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/quotes/subscribe',
     desc: '通过当前模式订阅单只证券行情，订阅事件同样通过 WebSocket 行情接收。',
-    defaults: { channel: 'normal', stock_code: '000001.SZ', period: '1d', count: '0' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'period', 'start_time', 'end_time', 'count', 'dividend_type'],
+    defaults: { channel: 'normal', stock_code: '000001.SZ', period: '1d', count: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'timeout'],
   },
   {
     id: 'ws_quotes',
@@ -251,8 +258,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/instrument',
     desc: '查询证券合约详情。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
-    defaults: { channel: 'trade', stock_code: '000001.SZ', iscomplete: '0' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'iscomplete'],
+    defaults: { channel: 'trade', stock_code: '000001.SZ', iscomplete: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'iscomplete', 'timeout'],
   },
   {
     id: 'sector_stocks',
@@ -261,8 +268,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/sector',
     desc: '查询指定板块的证券列表。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
-    defaults: { channel: 'trade', sector_name: '沪深A股' },
-    fields: ['bridge_id', 'channel', 'sector_name'],
+    defaults: { channel: 'trade', sector_name: '沪深A股', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'sector_name', 'timeout'],
   },
   {
     id: 'history_download',
@@ -271,8 +278,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/history/download',
     desc: '触发 QMT 下载指定证券历史行情数据。下载请求固定通过普通 QMT 发送，便于接收下载进度回调。',
-    defaults: { channel: 'normal', stock_code: '000001.SZ', period: '1d', incrementally: '' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'period', 'start_time', 'end_time', 'incrementally'],
+    defaults: { channel: 'normal', stock_code: '000001.SZ', period: '1d', incrementally: '', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'period', 'start_time', 'end_time', 'incrementally', 'timeout'],
   },
   {
     id: 'financial_data',
@@ -281,8 +288,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/financial',
     desc: '读取财务数据，支持填充数据和原始数据两种模式。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
-    defaults: { channel: 'trade', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'filled', report_type: 'announce_time' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type'],
+    defaults: { channel: 'trade', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'filled', report_type: 'announce_time', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type', 'timeout'],
   },
   {
     id: 'financial_download',
@@ -291,8 +298,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/financial/download',
     desc: '按大 QMT 官方能力读取并校验本地财务数据。财务数据需要先在 QMT 客户端“数据管理 - 财务数据下载”中下载，脚本侧不提供真正下载函数。',
-    defaults: { channel: 'normal', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'raw', report_type: 'report_time' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type'],
+    defaults: { channel: 'normal', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'raw', report_type: 'report_time', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type', 'timeout'],
   },
   {
     id: 'data_export',
@@ -301,8 +308,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/trade/export-data',
     desc: '调用 QMT xttrader.export_data 导出指定账号的数据。导出耗时较长时会显示任务进度，避免误判为失败。',
-    defaults: { channel: 'trade', result_path: 'D:\\cfquant_export', data_type: 'order', user_param_json: '{}' },
-    fields: ['bridge_id', 'trade_channel', 'account_id', 'account_type', 'export_result_path', 'export_data_type', 'start_time', 'end_time', 'export_user_param_json'],
+    defaults: { channel: 'trade', result_path: 'D:\\cfquant_export', data_type: 'order', user_param_json: '{}', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'trade_channel', 'account_id', 'account_type', 'export_result_path', 'export_data_type', 'start_time', 'end_time', 'export_user_param_json', 'timeout'],
   },
   {
     id: 'quote_unsubscribe',
@@ -311,8 +318,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/quotes/unsubscribe',
     desc: '取消指定的行情订阅。',
-    defaults: { channel: 'normal' },
-    fields: ['bridge_id', 'channel', 'quote_subscribe_id'],
+    defaults: { channel: 'normal', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'quote_subscribe_id', 'timeout'],
   },
   {
     id: 'quote_status',
@@ -330,8 +337,8 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的资金信息。',
-    defaults: { sections: 'asset', force: '0' },
-    fields: ['account_id', 'account_type'],
+    defaults: { sections: 'asset', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'timeout'],
   },
   {
     id: 'positions',
@@ -340,8 +347,8 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的持仓列表。',
-    defaults: { sections: 'positions', force: '0' },
-    fields: ['account_id', 'account_type'],
+    defaults: { sections: 'positions', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'timeout'],
   },
   {
     id: 'orders',
@@ -350,8 +357,8 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的委托列表。',
-    defaults: { sections: 'orders', force: '0' },
-    fields: ['account_id', 'account_type'],
+    defaults: { sections: 'orders', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'timeout'],
   },
   {
     id: 'trades',
@@ -360,8 +367,8 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的成交列表。',
-    defaults: { sections: 'trades', force: '0' },
-    fields: ['account_id', 'account_type'],
+    defaults: { sections: 'trades', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'timeout'],
   },
   {
     id: 'credit_query',
@@ -370,8 +377,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/credit/query',
     desc: '查询信用账户专用信息，包括融资融券明细、可融券标的、担保品和合约负债。需要选择或填写信用账户。',
-    defaults: { account_type: 'CREDIT', credit_query_action: 'detail' },
-    fields: ['account_id', 'account_type', 'credit_query_action'],
+    defaults: { account_type: 'CREDIT', credit_query_action: 'detail', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'credit_query_action', 'timeout'],
   },
   {
     id: 'credit_probe',
@@ -380,8 +387,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/credit/probe',
     desc: '只读探测信用账户在当前 QMT 下可用的资产、持仓、委托、成交和信用专项查询能力。',
-    defaults: { account_type: 'CREDIT' },
-    fields: ['account_id', 'account_type'],
+    defaults: { account_type: 'CREDIT', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'timeout'],
   },
   {
     id: 'xttrader_compat',
@@ -445,7 +452,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/order',
     desc: '按账号配置对应的内部通道提交买入或卖出委托。后端要求确认文本完全匹配。',
-    fields: ['account_id', 'account_type', 'side', 'stock_code', 'price', 'volume', 'confirm_text'],
+    defaults: { timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'side', 'stock_code', 'price', 'volume', 'confirm_text', 'timeout'],
   },
   {
     id: 'batch_order',
@@ -457,8 +465,9 @@ const API_ENDPOINTS = [
     defaults: {
       orders_json: '[{"stock_code":"000001.SZ","price":10.0,"volume":100},{"stock_code":"600000.SH","price":8.5,"volume":200}]',
       confirm_text: 'BATCH 2',
+      timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS),
     },
-    fields: ['account_id', 'account_type', 'batch_orders_json', 'batch_confirm_text'],
+    fields: ['account_id', 'account_type', 'batch_orders_json', 'batch_confirm_text', 'timeout'],
   },
   {
     id: 'cancel',
@@ -467,7 +476,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/cancel',
     desc: '按账号配置对应的内部通道撤销指定委托。后端要求确认文本完全匹配。',
-    fields: ['account_id', 'account_type', 'order_id', 'cancel_confirm_text'],
+    defaults: { timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'order_id', 'cancel_confirm_text', 'timeout'],
   },
   {
     id: 'lttx',
@@ -486,6 +496,7 @@ const API_FIELD_META = {
   account_type: { label: '账户类型', type: 'account_type' },
   credit_query_action: { label: '信用查询', type: 'credit_query_action', param: 'action' },
   channel: { label: '查询通道', type: 'channel' },
+  timeout: { label: '超时秒数', type: 'number', placeholder: '12' },
   whole_quote_channel: { label: '订阅通道', type: 'fixed_channel', param: 'channel' },
   trade_channel: { label: '交易通道', type: 'trade_channel', param: 'channel' },
   side: { label: '方向', type: 'side' },
@@ -529,6 +540,7 @@ const API_PARAM_DOCS = {
   account_type: '账户类型。普通证券账户填 STOCK，信用账户填 CREDIT。',
   action: '信用查询动作，detail/subjects/slo_code/assure/compacts。',
   channel: '高级模式下 normal 为普通 QMT，trade 为极速交易端；通用模式由后端按操作类型自动路由到 ctypes 单桥。',
+  timeout: '本次调试等待 QMT 响应的秒数。网络或桥接异常时建议保持 12 秒，避免页面长时间请求中。',
   sections: '账号数据段，asset/positions/orders/trades。',
   force: '是否强制刷新缓存，1 表示立即查询。',
   since: '回调起始序号。',
@@ -1001,6 +1013,74 @@ function log(message, data) {
   }
 }
 
+function setBindingNotice(message = '', level = 'info', options = {}) {
+  const nodes = [$('bindingPageNotice'), $('bindingSaveStatus')].filter(Boolean);
+  if (!nodes.length) return;
+  if (state.bindingNoticeTimer) {
+    window.clearTimeout(state.bindingNoticeTimer);
+    state.bindingNoticeTimer = null;
+  }
+  const safeLevel = ['info', 'success', 'warn', 'error', 'busy'].includes(level) ? level : 'info';
+  nodes.forEach((node) => {
+    node.textContent = message || '';
+    node.classList.toggle('hidden', !message);
+    ['is-info', 'is-success', 'is-warn', 'is-error', 'is-busy'].forEach((name) => node.classList.remove(name));
+    if (message) node.classList.add(`is-${safeLevel}`);
+  });
+  if (message && options.autoHide !== false) {
+    state.bindingNoticeTimer = window.setTimeout(() => setBindingNotice(''), options.duration || 6500);
+  }
+}
+
+function setBindingSaveBusy(isBusy, text = '保存中...') {
+  const form = $('bindingForm');
+  const submitBtn = form ? form.querySelector('button[type="submit"]') : null;
+  if (submitBtn) {
+    if (!submitBtn.dataset.defaultText) submitBtn.dataset.defaultText = submitBtn.textContent || '保存绑定';
+    submitBtn.disabled = !!isBusy;
+    submitBtn.textContent = isBusy ? text : submitBtn.dataset.defaultText;
+  }
+  const savePairBtn = $('savePairBtn');
+  if (savePairBtn) {
+    if (!savePairBtn.dataset.defaultText) savePairBtn.dataset.defaultText = savePairBtn.textContent || '保存当前账号';
+    savePairBtn.disabled = !!isBusy;
+    savePairBtn.textContent = isBusy ? text : savePairBtn.dataset.defaultText;
+  }
+}
+
+function bindingMarketRouteHasMissingDir(enabled, routes = {}) {
+  if (!enabled) return false;
+  return ['SH', 'SZ'].some((market) => !String(routes[market] && routes[market].qmt_dir || '').trim());
+}
+
+function bindingSaveSummary({
+  accountId,
+  accountType,
+  displayName,
+  mode,
+  qmtDir,
+  dataProvider,
+  marketRoutingEnabled,
+  marketBridges,
+  legacyFallback,
+} = {}) {
+  const name = displayName ? `${displayName} / ${accountId}` : accountId;
+  const parts = [
+    `绑定已保存：${name || '未命名账号'}`,
+    accountTypeLabel(accountType || 'STOCK'),
+    `${transportModeLabel(mode || 'ctypes', true)}模式`,
+  ];
+  if (marketRoutingEnabled) {
+    const missing = ['SH', 'SZ'].filter((market) => !String(marketBridges && marketBridges[market] && marketBridges[market].qmt_dir || '').trim());
+    parts.push(missing.length ? `市场路由已启用，${missing.join('/')}目录未填写` : '市场路由已启用，SH/SZ目录已记录');
+  } else {
+    parts.push(qmtDir ? 'QMT目录已记录' : 'QMT目录未填写');
+  }
+  if (dataProvider) parts.push('共享行情源');
+  if (legacyFallback) parts.push('后端使用兼容保存，重启 Web 后可保存完整运行配置');
+  return parts.join('，');
+}
+
 async function api(path, options = {}) {
   const headers = { 'Content-Type': 'application/json' };
   Object.assign(headers, authHeaders());
@@ -1369,6 +1449,10 @@ function wireVersionBadge() {
       if (popoverPinned && !force) return;
       widget.classList.remove('open');
       if (badge) badge.setAttribute('aria-expanded', 'false');
+    };
+    forceCloseVersionPopover = () => {
+      popoverPinned = false;
+      closePopover(true);
     };
     const pointerInsideVersionArea = () => (
       widget.matches(':hover')
@@ -1749,7 +1833,8 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
   if (endpoint.method !== 'DOC') {
     const actions = document.createElement('div');
     actions.className = 'api-form-actions field wide';
-    actions.innerHTML = `<button class="primary" type="submit">${endpoint.method === 'WS' ? '连接 WebSocket' : '发送请求'}</button><button id="apiResetBtn" type="button">重置参数</button>`;
+    const submitLabel = endpoint.method === 'WS' ? '连接 WebSocket' : '发送请求';
+    actions.innerHTML = `<button class="primary api-submit-btn" type="submit" data-default-label="${esc(submitLabel)}"><span class="button-spinner" aria-hidden="true"></span><span class="api-submit-label">${esc(submitLabel)}</span></button><button id="apiResetBtn" type="button">重置参数</button>`;
     form.appendChild(actions);
     setApiDefaults(endpoint);
   }
@@ -3194,6 +3279,35 @@ function setProjectUpdateControlsBusy(busy = state.projectUpdateBusy) {
 }
 
 function qmtUpdateProgressSteps(kind) {
+  if (kind === 'project-upload') {
+    return [
+      { key: 'prepare', label: '确认 Web 更新目标', percent: 8 },
+      { key: 'upload', label: '上传项目源码 zip', percent: 42 },
+      { key: 'backup', label: '备份当前 Web 项目', percent: 58 },
+      { key: 'install', label: '替换 Web 项目文件', percent: 82 },
+      { key: 'restart', label: '重启 Web 服务', percent: 94 },
+      { key: 'done', label: '更新完成', percent: 100 },
+    ];
+  }
+  if (kind === 'project-rollback') {
+    return [
+      { key: 'prepare', label: '确认 Web 回滚目标', percent: 12 },
+      { key: 'backup', label: '备份当前 Web 项目', percent: 36 },
+      { key: 'restore', label: '恢复选中备份', percent: 76 },
+      { key: 'restart', label: '重启 Web 服务', percent: 94 },
+      { key: 'done', label: '回滚完成', percent: 100 },
+    ];
+  }
+  if (kind === 'project-official') {
+    return [
+      { key: 'prepare', label: '确认 Web 更新目标', percent: 8 },
+      { key: 'download', label: '连接官网并下载发布包', percent: 38 },
+      { key: 'backup', label: '备份当前 Web 项目', percent: 58 },
+      { key: 'install', label: '替换 Web 项目文件', percent: 82 },
+      { key: 'restart', label: '重启 Web 服务', percent: 94 },
+      { key: 'done', label: '更新完成', percent: 100 },
+    ];
+  }
   if (kind === 'upload') {
     return [
       { key: 'prepare', label: '确认更新目标', percent: 8 },
@@ -3245,7 +3359,7 @@ function renderQmtUpdateProgress() {
   const closeBtn = $('qmtUpdateProgressCloseBtn');
   const closeBottomBtn = $('qmtUpdateProgressCloseBottomBtn');
   const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
-  if (title) title.textContent = progress.title || 'QMT 核心更新进度';
+  if (title) title.textContent = progress.title || '系统更新进度';
   if (percentText) percentText.textContent = `${Math.round(percent)}%`;
   if (bar) {
     bar.style.width = `${percent}%`;
@@ -3268,10 +3382,11 @@ function renderQmtUpdateProgress() {
 
 function openQmtUpdateProgress(kind, title, detail) {
   clearQmtUpdateProgressTimer();
+  forceCloseVersionPopover();
   const steps = qmtUpdateProgressSteps(kind);
   state.qmtUpdateProgress = {
     kind,
-    title: title || 'QMT 核心更新进度',
+    title: title || '系统更新进度',
     detail: detail || '',
     status: 'running',
     stepIndex: 0,
@@ -3764,9 +3879,52 @@ function handleProjectReload(reloadInfo, message) {
   if (!reloadInfo) return;
   const nextUrl = reloadInfo.next_url || window.location.href;
   log(message || 'Web 正在重启', { next_url: nextUrl });
+  const delayMs = state.qmtUpdateProgress && state.qmtUpdateProgress.status === 'done' ? 4200 : 2600;
   window.setTimeout(() => {
     window.location.href = nextUrl || window.location.href;
-  }, 2600);
+  }, delayMs);
+}
+
+function projectReloadProgressText(data, actionText) {
+  const reloadInfo = data && data.reload;
+  const version = data && data.current_version ? `，当前版本 ${data.current_version}` : '';
+  if (reloadInfo) return `${actionText}${version}。Web 服务即将重启，页面会自动跳转。`;
+  return `${actionText}${version}。`;
+}
+
+function uploadProjectUpdateZip(formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/project-updates/upload');
+    Object.entries(authHeaders()).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') xhr.setRequestHeader(key, value);
+    });
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || typeof onProgress !== 'function') return;
+      onProgress(event.loaded, event.total);
+    };
+    xhr.onload = () => {
+      let payload = null;
+      try {
+        payload = JSON.parse(xhr.responseText || '{}');
+      } catch (error) {
+        reject(new Error(`项目更新接口返回无法解析：${error.message}`));
+        return;
+      }
+      if (xhr.status === 401 && webAuthEnabled()) {
+        clearWebAuthToken();
+        showWebAuthOverlay('请先登录');
+      }
+      if (!payload.ok) {
+        reject(new Error((payload && payload.error) || `HTTP ${xhr.status}`));
+        return;
+      }
+      resolve(payload.data);
+    };
+    xhr.onerror = () => reject(new Error('上传项目 zip 更新请求失败'));
+    xhr.onabort = () => reject(new Error('上传项目 zip 更新请求已中断'));
+    xhr.send(formData);
+  });
 }
 
 async function refreshProjectUpdateStatus(options = {}) {
@@ -3814,22 +3972,33 @@ async function runProjectGithubUpdateFromUi(options = {}) {
   }
   const confirmed = window.confirm(confirmText);
   if (!confirmed) return;
+  openQmtUpdateProgress(
+    'project-official',
+    'Web 项目更新',
+    '正在准备从官网优先源更新 Web 项目...'
+  );
   state.versionUpdateBusy = true;
   setProjectUpdateControlsBusy(true);
   renderProjectVersion(state.versionInfo);
   try {
+    setQmtUpdateProgressStep('download', '正在连接官网并下载 Web 项目发布包...');
     const data = await api('/api/project-updates/official', {
       method: 'POST',
       body: JSON.stringify({ site_url: DEFAULT_OFFICIAL_SITE_URL, repo_url: repoUrl, ref, reload: true }),
     });
+    setQmtUpdateProgressStep('restart', data.reload ? 'Web 项目已替换，正在准备重启 Web 服务...' : 'Web 项目已替换，正在刷新页面状态...');
     renderProjectUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: false });
+    finishQmtUpdateProgress(data, projectReloadProgressText(data, 'Web 项目更新完成'));
     log('Web 项目已从官网优先更新', {
       version: data.current_version || '',
       copied_files: data.copied_files || 0,
       source: options.source || 'settings',
     });
     handleProjectReload(data.reload, 'Web 项目已更新，正在重启');
+  } catch (error) {
+    failQmtUpdateProgress(error);
+    throw error;
   } finally {
     state.versionUpdateBusy = false;
     setProjectUpdateControlsBusy(false);
@@ -3849,22 +4018,32 @@ async function uploadProjectZipUpdateFromUi() {
   const formData = new FormData();
   formData.append('reload', '1');
   formData.append('file', file, file.name);
+  openQmtUpdateProgress(
+    'project-upload',
+    'Web 项目 zip 更新',
+    `正在上传项目源码 zip：${file.name}`
+  );
   state.versionUpdateBusy = true;
   setProjectUpdateControlsBusy(true);
   renderProjectVersion(state.versionInfo);
   try {
-    const response = await fetch('/api/project-updates/upload', { method: 'POST', headers: authHeaders(), body: formData });
-    const payload = await response.json();
-    if (!payload.ok) {
-      throw new Error(payload.error || `HTTP ${response.status}`);
-    }
-    renderProjectUpdateResult(payload.data);
-    alertUpdateNotice(payload.data, { forceQmtRestart: false });
-    log('Web 项目已通过 zip 更新', {
-      version: payload.data.current_version || '',
-      copied_files: payload.data.copied_files || 0,
+    const data = await uploadProjectUpdateZip(formData, (loaded, total) => {
+      const uploadPercent = total > 0 ? Math.round((loaded / total) * 100) : 0;
+      const mapped = 8 + Math.min(34, Math.round(uploadPercent * 0.34));
+      setQmtUpdateProgressStep('upload', `正在上传项目源码 zip：${uploadPercent}%`, mapped);
     });
-    handleProjectReload(payload.data.reload, 'Web 项目 zip 更新完成，正在重启');
+    setQmtUpdateProgressStep('restart', data.reload ? 'Web 项目已替换，正在准备重启 Web 服务...' : 'Web 项目已替换，正在刷新页面状态...');
+    renderProjectUpdateResult(data);
+    alertUpdateNotice(data, { forceQmtRestart: false });
+    finishQmtUpdateProgress(data, projectReloadProgressText(data, 'Web 项目 zip 更新完成'));
+    log('Web 项目已通过 zip 更新', {
+      version: data.current_version || '',
+      copied_files: data.copied_files || 0,
+    });
+    handleProjectReload(data.reload, 'Web 项目 zip 更新完成，正在重启');
+  } catch (error) {
+    failQmtUpdateProgress(error);
+    throw error;
   } finally {
     state.versionUpdateBusy = false;
     setProjectUpdateControlsBusy(false);
@@ -3881,18 +4060,29 @@ async function rollbackProjectUpdateFromUi() {
   }
   const confirmed = window.confirm(`确认回滚 Web 项目到备份 ${backup} 并自动重启？`);
   if (!confirmed) return;
+  openQmtUpdateProgress(
+    'project-rollback',
+    'Web 项目回滚',
+    `正在回滚 Web 项目到备份 ${backup}`
+  );
   state.versionUpdateBusy = true;
   setProjectUpdateControlsBusy(true);
   renderProjectVersion(state.versionInfo);
   try {
+    setQmtUpdateProgressStep('restore', '正在备份当前 Web 项目并恢复选中备份...');
     const data = await api('/api/project-updates/rollback', {
       method: 'POST',
       body: JSON.stringify({ backup, reload: true }),
     });
+    setQmtUpdateProgressStep('restart', data.reload ? 'Web 项目已回滚，正在准备重启 Web 服务...' : 'Web 项目已回滚，正在刷新页面状态...');
     renderProjectUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: false });
+    finishQmtUpdateProgress(data, projectReloadProgressText(data, 'Web 项目回滚完成'));
     log('Web 项目已回滚', { version: data.current_version || '', backup });
     handleProjectReload(data.reload, 'Web 项目已回滚，正在重启');
+  } catch (error) {
+    failQmtUpdateProgress(error);
+    throw error;
   } finally {
     state.versionUpdateBusy = false;
     setProjectUpdateControlsBusy(false);
@@ -4260,7 +4450,7 @@ function currentApiRequest() {
       params[name] = params[name].split(',').map((item) => item.trim()).filter(Boolean);
     }
   });
-  ['count'].forEach((name) => {
+  ['count', 'timeout'].forEach((name) => {
     if (params[name] !== undefined && params[name] !== '') params[name] = Number(params[name]);
   });
   ['fill_data', 'iscomplete'].forEach((name) => {
@@ -4321,8 +4511,59 @@ function updateApiRequestPreview() {
   $('apiRequestPreview').textContent = JSON.stringify(request, null, 2);
 }
 
+function apiDebugTimeoutMs(request) {
+  let seconds = 0;
+  if (request && request.body && request.body.timeout !== undefined && request.body.timeout !== '') {
+    seconds = Number(request.body.timeout);
+  }
+  if (!seconds && request && request.url) {
+    try {
+      const parsed = new URL(request.url);
+      seconds = Number(parsed.searchParams.get('timeout') || 0);
+    } catch (error) {
+      seconds = 0;
+    }
+  }
+  if (!Number.isFinite(seconds) || seconds <= 0) return API_DEBUG_TIMEOUT_MS;
+  return Math.max(8000, Math.min(120000, Math.round((seconds + 6) * 1000)));
+}
+
+function setApiDebugBusy(busy, label = '') {
+  state.apiDebugBusy = !!busy;
+  const form = $('apiForm');
+  if (!form) return;
+  const submit = form.querySelector('button[type="submit"]');
+  const reset = $('apiResetBtn');
+  if (submit) {
+    const defaultLabel = submit.dataset.defaultLabel || submit.textContent || '发送请求';
+    submit.disabled = !!busy;
+    submit.classList.toggle('is-loading', !!busy);
+    const labelNode = submit.querySelector('.api-submit-label');
+    if (labelNode) labelNode.textContent = busy ? (label || '请求中') : defaultLabel;
+  }
+  if (reset) reset.disabled = !!busy;
+}
+
+function apiDebugElapsedMs(startedAt) {
+  return Math.round(Math.max(0, performance.now() - startedAt));
+}
+
+function apiDebugOutput(payload, request, startedAt, extra = {}) {
+  const debug = {
+    endpoint: request.endpointId || state.apiEndpointId,
+    method: request.method,
+    elapsed_ms: apiDebugElapsedMs(startedAt),
+    ...extra,
+  };
+  if (typeof payload === 'string') {
+    return `${payload}\n\n调试信息：${JSON.stringify(debug)}`;
+  }
+  return JSON.stringify({ ...payload, debug }, null, 2);
+}
+
 async function sendApiDebugRequest(event) {
   event.preventDefault();
+  if (state.apiDebugBusy) return;
   const request = currentApiRequest();
   const endpoint = apiEndpointById(state.apiEndpointId);
   if (request.method === 'DOC') {
@@ -4349,20 +4590,25 @@ async function sendApiDebugRequest(event) {
     $('apiResponseBox').textContent = JSON.stringify({ ok: false, error: request.body.orders_json_error || request.body.user_param_json_error }, null, 2);
     return;
   }
+  const startedAt = performance.now();
+  const timeoutMs = apiDebugTimeoutMs(request);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  setApiDebugBusy(true, request.method === 'WS' ? '连接中' : '请求中');
   if (isDownloadEndpoint(endpoint)) {
     request.body = request.body || {};
     request.body.job_id = request.body.job_id || newDownloadJobId(endpoint.id);
     beginDownloadProgress(request.body.job_id, request.body, endpoint);
     $('apiRequestPreview').textContent = JSON.stringify(request, null, 2);
-    $('apiResponseBox').textContent = `请求中...\n已开始监听下载进度 job_id=${request.body.job_id}`;
+    $('apiResponseBox').textContent = `请求中...\n已开始监听下载进度 job_id=${request.body.job_id}\n前端调试超时 ${Math.round(timeoutMs / 1000)} 秒`;
   } else if (isExportEndpoint(endpoint)) {
     request.body = request.body || {};
     request.body.job_id = request.body.job_id || newDownloadJobId(endpoint.id);
     beginExportProgress(request.body.job_id, request.body, endpoint);
     $('apiRequestPreview').textContent = JSON.stringify(request, null, 2);
-    $('apiResponseBox').textContent = `导出中...\n任务 ID=${request.body.job_id}\n结果会写入 QMT 侧 result_path 指定目录。`;
+    $('apiResponseBox').textContent = `导出中...\n任务 ID=${request.body.job_id}\n结果会写入 QMT 侧 result_path 指定目录。\n前端调试超时 ${Math.round(timeoutMs / 1000)} 秒`;
   } else {
-    $('apiResponseBox').textContent = '请求中...';
+    $('apiResponseBox').textContent = `请求中...\n前端调试超时 ${Math.round(timeoutMs / 1000)} 秒`;
   }
   try {
     const response = await fetch(request.url, {
@@ -4372,6 +4618,7 @@ async function sendApiDebugRequest(event) {
         ...authHeaders(),
       },
       body: request.body ? JSON.stringify(request.body) : undefined,
+      signal: controller.signal,
     });
     const text = await response.text();
     let payload;
@@ -4380,7 +4627,7 @@ async function sendApiDebugRequest(event) {
     } catch (error) {
       payload = text;
     }
-    $('apiResponseBox').textContent = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+    $('apiResponseBox').textContent = apiDebugOutput(payload, request, startedAt, { http_status: response.status });
     handleApiDebugPayload(payload);
     if (isDownloadEndpoint(endpoint)) {
       finishDownloadRequest(payload);
@@ -4388,12 +4635,19 @@ async function sendApiDebugRequest(event) {
       finishExportProgress(payload, payload && payload.ok === false ? new Error(payload.error || '导出失败') : null);
     }
   } catch (error) {
-    $('apiResponseBox').textContent = JSON.stringify({ ok: false, error: error.message }, null, 2);
+    const aborted = error && error.name === 'AbortError';
+    const message = aborted
+      ? `前端调试超时 ${Math.round(timeoutMs / 1000)} 秒，后端或 QMT 可能仍在处理。请先检查绑定状态里的 SH/SZ 子桥是否在线，再缩小调试接口范围或调大 timeout。`
+      : error.message;
+    $('apiResponseBox').textContent = apiDebugOutput({ ok: false, error: message }, request, startedAt, { aborted });
     if (isDownloadEndpoint(endpoint)) {
       finishDownloadRequest(null, error);
     } else if (isExportEndpoint(endpoint)) {
       finishExportProgress(null, error);
     }
+  } finally {
+    window.clearTimeout(timeoutId);
+    setApiDebugBusy(false);
   }
 }
 
@@ -4696,6 +4950,9 @@ function setView(view) {
   }
   if (state.appStarted && view === 'callbacks') {
     refreshCallbacks().catch((error) => log('回调刷新失败', { error: error.message }));
+  }
+  if (view === 'tutorial') {
+    renderActiveTutorialMermaid();
   }
 }
 
@@ -5283,38 +5540,66 @@ async function saveCurrentAccountPair() {
     },
   };
   if (!accountId) {
+    setBindingNotice('请先选择或填写资金账号，再保存绑定。', 'error', { autoHide: false });
     log('账号为空，无法保存配对');
     return;
   }
-  const data = await saveAccountConfigRequest({
-    account_id: accountId,
-    account_type: accountType,
-    account_key: accountKey,
-    qmt_dir: qmtDir,
-    mode,
-    data_provider: dataProvider,
-    market_routing_enabled: marketRoutingEnabled,
-    market_bridges: marketBridges,
-  });
-  state.accountPairs = data.account_pairs || {};
-  state.accountConfigs = data.account_configs || state.accountConfigs;
-  state.setup = data.setup || state.setup;
-  state.defaultAccountId = (data.setup && data.setup.default_account_id) || state.defaultAccountId;
-  state.bridges = data.bridges || state.bridges;
-  state.accountId = accountId;
-  state.accountType = accountType;
-  state.accountKey = (data.account && data.account.account_key) || accountKey;
-  renderBridgeSelect(state.bridges);
-  renderAccountSelect();
-  applyAccountPair(state.accountKey || accountId);
-  syncBindingForm();
-  renderAccountPairs();
-  await refreshBindingStatuses();
-  log('账号配置已保存', { account_id: accountId, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
-  if (data.qmt_bridge_identity) {
-    log('ctypes 身份配置已处理', data.qmt_bridge_identity);
+  setBindingSaveBusy(true);
+  setBindingNotice('正在保存账号绑定并刷新连接状态...', 'busy', { autoHide: false });
+  try {
+    const data = await saveAccountConfigRequest({
+      account_id: accountId,
+      account_type: accountType,
+      account_key: accountKey,
+      qmt_dir: qmtDir,
+      mode,
+      data_provider: dataProvider,
+      market_routing_enabled: marketRoutingEnabled,
+      market_bridges: marketBridges,
+    });
+    state.accountPairs = data.account_pairs || {};
+    state.accountConfigs = data.account_configs || state.accountConfigs;
+    state.setup = data.setup || state.setup;
+    state.defaultAccountId = (data.setup && data.setup.default_account_id) || state.defaultAccountId;
+    state.bridges = data.bridges || state.bridges;
+    state.accountId = accountId;
+    state.accountType = accountType;
+    state.accountKey = (data.account && data.account.account_key) || accountKey;
+    renderBridgeSelect(state.bridges);
+    renderAccountSelect();
+    applyAccountPair(state.accountKey || accountId);
+    syncBindingForm();
+    renderAccountPairs();
+    let refreshError = null;
+    try {
+      await refreshBindingStatuses();
+    } catch (error) {
+      refreshError = error;
+      log('绑定状态刷新失败', { error: error.message });
+    }
+    const noticeLevel = refreshError || data.legacy_fallback || bindingMarketRouteHasMissingDir(marketRoutingEnabled, marketBridges) ? 'warn' : 'success';
+    const noticeMessage = bindingSaveSummary({
+      accountId,
+      accountType,
+      mode,
+      qmtDir,
+      dataProvider,
+      marketRoutingEnabled,
+      marketBridges,
+      legacyFallback: !!data.legacy_fallback,
+    });
+    setBindingNotice(refreshError ? `${noticeMessage}，连接状态刷新失败：${refreshError.message}` : noticeMessage, noticeLevel);
+    log('账号配置已保存', { account_id: accountId, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
+    if (data.qmt_bridge_identity) {
+      log('ctypes 身份配置已处理', data.qmt_bridge_identity);
+    }
+    if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId, account_type: accountType });
+  } catch (error) {
+    setBindingNotice(`保存失败：${error.message}`, 'error', { autoHide: false });
+    log('账号配置保存失败', { error: error.message });
+  } finally {
+    setBindingSaveBusy(false);
   }
-  if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId, account_type: accountType });
 }
 
 async function removeCurrentAccountPair() {
@@ -5581,9 +5866,13 @@ async function submitBindingForm(event) {
     },
   };
   if (!accountId) {
+    setBindingNotice('请填写资金账号后再保存绑定。', 'error', { autoHide: false });
+    if (form.account_id) form.account_id.focus();
     log('账号为空，无法保存绑定');
     return;
   }
+  setBindingSaveBusy(true);
+  setBindingNotice('正在保存绑定并刷新连接状态...', 'busy', { autoHide: false });
   try {
     const data = await saveAccountConfigRequest({
       account_id: accountId,
@@ -5625,15 +5914,37 @@ async function submitBindingForm(event) {
     applyAccountPair(state.accountKey);
     syncBindingForm();
     renderAccountPairs();
-    await refreshBindingStatuses();
+    let refreshError = null;
+    try {
+      await refreshBindingStatuses();
+    } catch (error) {
+      refreshError = error;
+      log('绑定状态刷新失败', { error: error.message });
+    }
     closeBindingDialog();
+    const noticeLevel = refreshError || data.legacy_fallback || bindingMarketRouteHasMissingDir(marketRoutingEnabled, marketBridges) ? 'warn' : 'success';
+    const noticeMessage = bindingSaveSummary({
+      accountId,
+      accountType,
+      displayName,
+      mode,
+      qmtDir,
+      dataProvider,
+      marketRoutingEnabled,
+      marketBridges,
+      legacyFallback: !!data.legacy_fallback,
+    });
+    setBindingNotice(refreshError ? `${noticeMessage}，连接状态刷新失败：${refreshError.message}` : noticeMessage, noticeLevel);
     log('账号配置已保存', { account_id: accountId, display_name: displayName, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
     if (data.qmt_bridge_identity) {
       log('ctypes 身份配置已处理', data.qmt_bridge_identity);
     }
     if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId, account_type: accountType });
   } catch (error) {
+    setBindingNotice(`保存失败：${error.message}`, 'error', { autoHide: false });
     log('账号配置保存失败', { error: error.message });
+  } finally {
+    setBindingSaveBusy(false);
   }
 }
 
@@ -5730,6 +6041,43 @@ async function refreshBindingStatuses() {
   }
 }
 
+function bindingVerifyKey(accountId, bridgeId, accountType = 'STOCK', accountKey = '') {
+  return [
+    String(accountKey || '').trim(),
+    String(bridgeId || '').trim(),
+    normalizeAccountType(accountType),
+    String(accountId || '').trim(),
+  ].join('|');
+}
+
+function updateBindingVerifyButtons() {
+  const busyKey = state.bindingVerifyBusyKey;
+  document.querySelectorAll('.verify-pair-btn').forEach((button) => {
+    const buttonKey = bindingVerifyKey(
+      button.dataset.accountId,
+      button.dataset.bridgeId,
+      button.dataset.accountType,
+      button.dataset.accountKey,
+    );
+    const loading = !!busyKey && busyKey === buttonKey;
+    button.disabled = !!busyKey;
+    button.classList.toggle('is-loading', loading);
+    if (loading) {
+      button.setAttribute('aria-busy', 'true');
+    } else {
+      button.removeAttribute('aria-busy');
+    }
+    const label = button.querySelector('.binding-verify-label');
+    if (label) label.textContent = loading ? '验证中' : '验证';
+  });
+}
+
+function setBindingVerifyBusy(accountId, bridgeId, accountType = 'STOCK', accountKey = '', busy = true) {
+  const key = bindingVerifyKey(accountId, bridgeId, accountType, accountKey);
+  state.bindingVerifyBusyKey = busy ? key : '';
+  updateBindingVerifyButtons();
+}
+
 function bindingStatusRowHtml(item, status, error, withVerify) {
   const selected = status && status.status ? status.status : status;
   const normalOnline = !!(selected && selected.normal && selected.normal.online);
@@ -5768,6 +6116,12 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const accountKey = item.accountKey || item.account_key || accountConfigKey('', config);
   const bridgeId = item.bridgeId || item.bridge_id || (config && config.bridge_id) || '';
   const bridgeName = (state.bridges && state.bridges[bridgeId] && state.bridges[bridgeId].name) || bridgeId || 'default';
+  const verifyKey = bindingVerifyKey(accountText, bridgeId, accountType, accountKey);
+  const verifying = !!state.bindingVerifyBusyKey && state.bindingVerifyBusyKey === verifyKey;
+  const verifyDisabled = state.bindingVerifyBusyKey ? ' disabled' : '';
+  const verifyBusy = verifying ? ' aria-busy="true"' : '';
+  const verifyClass = verifying ? ' verify-pair-btn is-loading' : ' verify-pair-btn';
+  const verifyLabel = verifying ? '验证中' : '验证';
   const preferredLabel = transportModeLabel(preferred, true);
   const effectiveLabel = transportModeLabel(effective, true);
   const statusClass = error ? 'offline' : (marketEnabled
@@ -5776,9 +6130,13 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const statusLabel = error ? '状态失败' : (marketEnabled
     ? (marketReadyCount >= 2 ? '市场路由在线' : (marketReadyCount > 0 ? '市场路由部分在线' : '市场路由离线'))
     : (normalOnline && tradeOnline ? '全部在线' : (normalOnline || tradeOnline ? '部分在线' : '离线')));
-  const channelText = marketEnabled && marketStatusText
-    ? `主桥 ${normalOnline || tradeOnline ? '在线' : '离线'} / ${marketStatusText}`
-    : `普通${normalOnline ? '在线' : '离线'} / 极速${tradeOnline ? '在线' : '离线'}`;
+  const mainBridgeLabel = normalOnline || tradeOnline ? '在线' : (marketEnabled && marketReadyCount > 0 ? '未启用' : '离线');
+  const connectionLines = marketEnabled && configuredMarketLines.length
+    ? [`主桥 ${mainBridgeLabel}`, ...configuredMarketLines.map((row) => row.text)]
+    : [`普通${normalOnline ? '在线' : '离线'}`, `极速${tradeOnline ? '在线' : '离线'}`];
+  const connectionHtml = connectionLines
+    .map((line) => `<small class="binding-cell-note binding-status-line">${esc(line)}</small>`)
+    .join('');
   const actionAttrs = `data-account-id="${esc(accountText)}" data-account-type="${esc(accountType)}" data-account-key="${esc(accountKey)}" data-bridge-id="${esc(bridgeId)}" data-display-name="${esc(displayName)}"`;
   if (!withVerify) {
     return `<tr title="${esc(title)}">
@@ -5790,39 +6148,44 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
     </tr>`;
   }
   return `<tr class="binding-list-row" title="${esc(title)}">
-    <td class="binding-name-cell">
-      <strong>${esc(displayName || '--')}</strong>
-    </td>
-    <td class="binding-account-cell">
-      <strong>${esc(accountText)}</strong>
-      <small>${esc(accountTypeLabel(accountType))}</small>
-    </td>
-    <td>
-      <span class="status-dot ${esc(statusClass)}">${esc(statusLabel)}</span>
-      <small class="binding-cell-note">${esc(channelText)}</small>
-    </td>
-    <td>${esc(preferredLabel)}模式</td>
-    <td><span class="status-dot ${esc(statusClass)}">${esc(effectiveLabel)}模式${status && status.fallback ? '（已回退）' : ''}</span></td>
-    <td>
-      <strong class="binding-bridge-name">${esc(bridgeName)}</strong>
-      <small class="binding-cell-note">${esc(bridgeId || 'default')}</small>
-      ${marketEnabled && marketStatusText ? `<small class="binding-cell-note">${esc(marketStatusText)}</small>` : ''}
-    </td>
-    <td class="binding-dir-cell" title="${esc(qmtDirText)}">${esc(qmtDirText)}</td>
-    <td>${provider ? '<span class="source-pill source-cfquant">共享行情源</span>' : '<span class="binding-muted">普通绑定</span>'}</td>
-    <td>
+    <td data-label="操作">
       <div class="binding-row-actions">
-        <button type="button" class="verify-pair-btn" data-binding-action="verify" ${actionAttrs}>验证</button>
+        <button type="button" class="${verifyClass.trim()}" data-binding-action="verify" ${actionAttrs}${verifyDisabled}${verifyBusy}>
+          <span class="button-spinner" aria-hidden="true"></span><span class="binding-verify-label">${esc(verifyLabel)}</span>
+        </button>
         <button type="button" data-binding-action="edit" ${actionAttrs}>编辑</button>
         <button type="button" class="binding-delete-btn" data-binding-action="delete" ${actionAttrs}>删除</button>
       </div>
     </td>
+    <td class="binding-name-cell" data-label="账号名称">
+      <strong>${esc(displayName || '--')}</strong>
+    </td>
+    <td class="binding-account-cell" data-label="资金账号">
+      <strong>${esc(accountText)}</strong>
+      <small>${esc(accountTypeLabel(accountType))}</small>
+    </td>
+    <td class="binding-status-cell" data-label="连接状态">
+      <span class="status-dot ${esc(statusClass)}">${esc(statusLabel)}</span>
+      ${connectionHtml}
+    </td>
+    <td data-label="首选模式">${esc(preferredLabel)}模式</td>
+    <td data-label="实际模式"><span class="status-dot ${esc(statusClass)}">${esc(effectiveLabel)}模式${status && status.fallback ? '（已回退）' : ''}</span></td>
+    <td class="binding-channel-cell" data-label="内部通道">
+      <strong class="binding-bridge-name">${esc(bridgeName)}</strong>
+      <small class="binding-cell-note">${esc(bridgeId || 'default')}</small>
+      ${marketEnabled && marketStatusText ? `<small class="binding-cell-note">${esc(marketStatusText)}</small>` : ''}
+    </td>
+    <td class="binding-dir-cell" data-label="QMT 目录" title="${esc(qmtDirText)}">${esc(qmtDirText)}</td>
+    <td data-label="数据源">${provider ? '<span class="source-pill source-cfquant">共享行情源</span>' : '<span class="binding-muted">普通绑定</span>'}</td>
   </tr>`;
 }
 
 async function verifyPair(accountId, bridgeId, accountType = 'STOCK', accountKey = '') {
   accountType = normalizeAccountType(accountType);
-  $('pairVerifyNote').textContent = `${accountId}`;
+  if (state.bindingVerifyBusyKey) return;
+  setBindingVerifyBusy(accountId, bridgeId, accountType, accountKey, true);
+  const note = $('pairVerifyNote');
+  if (note) note.textContent = `正在验证 ${accountId}...`;
   try {
     const data = await api('/api/account-pairs/verify', {
       method: 'POST',
@@ -5836,11 +6199,14 @@ async function verifyPair(accountId, bridgeId, accountType = 'STOCK', accountKey
       }),
     });
     renderPairVerification(data);
+    if (note) note.textContent = `验证完成：${accountId}`;
     log('账号验证完成', { account_id: accountId, account_type: accountType });
   } catch (error) {
     renderPairVerification(null);
-    $('pairVerifyNote').textContent = `验证失败：${error.message}`;
+    if (note) note.textContent = `验证失败：${error.message}`;
     log('账号验证失败', { account_id: accountId, account_type: accountType, error: error.message });
+  } finally {
+    setBindingVerifyBusy(accountId, bridgeId, accountType, accountKey, false);
   }
 }
 
@@ -6380,7 +6746,14 @@ function renderAsset(section) {
 
 function renderPositions(section) {
   const rows = (section && Array.isArray(section.data)) ? section.data : [];
-  $('positionCount').textContent = `${rows.length} 条`;
+  const counts = section && section.market_counts ? section.market_counts : null;
+  const countParts = counts
+    ? ['SH', 'SZ'].filter((market) => Object.prototype.hasOwnProperty.call(counts, market)).map((market) => `${market} ${counts[market]}`)
+    : [];
+  const routeText = countParts.length ? `（${countParts.join(' / ')}）` : '';
+  const countNode = $('positionCount');
+  countNode.textContent = `${rows.length} 条${routeText}`;
+  countNode.title = section && Array.isArray(section.partial_errors) ? section.partial_errors.join('\n') : '';
   const html = positionRowsHtml(rows);
   $('positionsBody').innerHTML = html || '<tr><td colspan="7">无持仓数据</td></tr>';
   const tradeBody = $('tradePositionsBody');
@@ -7919,9 +8292,95 @@ function setTutorialTopic(name) {
     panel.classList.toggle('active', panel.dataset.guidePanel === name);
   });
   if (name === 'onboarding') syncOnboardingWizard();
+  if (state.currentView === 'tutorial') renderActiveTutorialMermaid();
+}
+
+function initializeMermaidRenderer() {
+  if (!window.mermaid) return false;
+  if (mermaidRendererReady) return true;
+  window.mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: 'loose',
+    theme: 'base',
+    themeVariables: {
+      fontFamily: '"Segoe UI", "Microsoft YaHei", Arial, sans-serif',
+      primaryColor: '#eef5ff',
+      primaryTextColor: '#17202a',
+      primaryBorderColor: '#b9d3fb',
+      lineColor: '#7d8b9a',
+      secondaryColor: '#f1f8f4',
+      tertiaryColor: '#fff8ec',
+      noteBkgColor: '#fff8ec',
+      noteBorderColor: '#efc48e',
+      actorBkg: '#eef5ff',
+      actorBorder: '#b9d3fb',
+      actorTextColor: '#17202a',
+      labelBoxBkgColor: '#fbfcfd',
+      labelBoxBorderColor: '#dce3ea',
+      labelTextColor: '#17202a',
+    },
+    flowchart: {
+      useMaxWidth: true,
+      htmlLabels: true,
+      curve: 'basis',
+    },
+    sequence: {
+      useMaxWidth: true,
+      mirrorActors: false,
+      showSequenceNumbers: false,
+    },
+  });
+  mermaidRendererReady = true;
+  return true;
+}
+
+function markMermaidFallback(node, error) {
+  const card = node && node.closest ? node.closest('.guide-mermaid-card') : null;
+  if (!card) return;
+  card.classList.add('mermaid-fallback');
+  if (!card.querySelector('.mermaid-fallback-note')) {
+    const note = document.createElement('div');
+    note.className = 'mermaid-fallback-note';
+    note.textContent = error ? `Mermaid 架构图渲染失败：${error}` : 'Mermaid 渲染脚本未加载，暂时显示图表源码。';
+    card.insertBefore(note, card.firstChild);
+  }
+}
+
+function renderMermaidDiagrams(scope) {
+  const root = scope || document;
+  const nodes = Array.from(root.querySelectorAll('.mermaid')).filter((node) => !node.dataset.processed);
+  if (!nodes.length) return;
+  if (!initializeMermaidRenderer()) {
+    nodes.forEach((node) => markMermaidFallback(node));
+    return;
+  }
+  window.setTimeout(() => {
+    window.mermaid.run({ nodes }).catch((error) => {
+      nodes.forEach((node) => markMermaidFallback(node, error.message || String(error)));
+      log('Mermaid 架构图渲染失败', { error: error.message || String(error) });
+    });
+  }, 0);
+}
+
+function renderActiveTutorialMermaid() {
+  const panel = document.querySelector('.tutorial-topic.active');
+  if (!panel || !panel.querySelector('.mermaid')) return;
+  window.requestAnimationFrame(() => renderMermaidDiagrams(panel));
+}
+
+function ensureOnboardingModalRoot() {
+  const backdrop = $('onboardingBackdrop');
+  const wizard = $('onboardingWizard');
+  if (backdrop && backdrop.parentElement !== document.body) {
+    document.body.appendChild(backdrop);
+  }
+  if (wizard && wizard.parentElement !== document.body) {
+    document.body.appendChild(wizard);
+  }
 }
 
 function showOnboardingModal(options = {}) {
+  ensureOnboardingModalRoot();
   syncOnboardingWizard({ force: !!options.force });
   const wizard = $('onboardingWizard');
   const backdrop = $('onboardingBackdrop');

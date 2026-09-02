@@ -54,12 +54,12 @@ from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
 from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
 from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
-from cfquant.protocol import loads_message, new_id, pack_event, pack_response
+from cfquant.protocol import decode_value, loads_message, new_id, pack_event, pack_response
 from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260831_01"
+WEB_VERSION = "web_20260902_05"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
@@ -286,6 +286,7 @@ ACCOUNT_ACTIONS = {
     "orders": "xttrader.query_stock_orders",
     "trades": "xttrader.query_stock_trades",
 }
+MARKET_ACCOUNT_ROW_SECTIONS = {"positions", "orders", "trades"}
 CREDIT_ACTIONS = {
     "detail": "xttrader.query_credit_detail",
     "credit_detail": "xttrader.query_credit_detail",
@@ -372,6 +373,55 @@ def account_key_for(account_id, account_type=None, bridge_id=None):
         normalize_account_type(account_type),
         account_id,
     )
+
+
+def account_subscription_keys(account_id, account_type=None, bridge_id=None, account_key=None):
+    account_id = str(account_id or "").strip()
+    account_key = str(account_key or "").strip()
+    bridge_id = normalize_bridge_id(bridge_id) if bridge_id else ""
+    keys = []
+
+    def add(value):
+        value = str(value or "").strip()
+        if value and value not in keys:
+            keys.append(value)
+
+    add(account_key)
+    if account_id:
+        try:
+            add(account_key_for(account_id, account_type, bridge_id or DEFAULT_BRIDGE_ID))
+        except Exception:
+            pass
+
+    web_config = globals().get("WEB_CONFIG")
+    if web_config is not None and account_id:
+        try:
+            configs = web_config.account_configs()
+        except Exception:
+            configs = {}
+        for key, row in configs.items():
+            if not isinstance(row, dict):
+                continue
+            row_account_id = str(row.get("account_id") or "").strip()
+            if row_account_id != account_id:
+                continue
+            if account_type not in (None, ""):
+                try:
+                    if normalize_account_type(row.get("account_type") or "STOCK") != normalize_account_type(account_type):
+                        continue
+                except Exception:
+                    continue
+            if bridge_id and normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID) != bridge_id:
+                continue
+            add(key)
+            add(row.get("account_key"))
+            if str(row.get("account_key") or "").strip() == row_account_id:
+                add(row_account_id)
+            try:
+                add(account_key_for(row_account_id, row.get("account_type") or account_type, row.get("bridge_id") or bridge_id or DEFAULT_BRIDGE_ID))
+            except Exception:
+                pass
+    return keys
 
 
 def account_identity(account_id=None, account_type=None, bridge_id=None, account_key=None):
@@ -472,6 +522,56 @@ def split_orders_by_market(orders):
     return groups
 
 
+def data_request_markets(params):
+    result = []
+
+    def add(value):
+        market = normalize_market_code(value) or stock_code_market(value)
+        if market and market not in result:
+            result.append(market)
+
+    if not isinstance(params, dict):
+        return result
+    explicit = request_params_market(params)
+    if explicit:
+        add(explicit)
+    for key in ("stock_code", "code", "security_code", "instrument_id"):
+        if params.get(key) not in (None, ""):
+            add(params.get(key))
+    for key in ("code_list", "stock_list", "stock_codes", "stocks"):
+        value = params.get(key)
+        if isinstance(value, str):
+            items = [item.strip() for item in value.replace("，", ",").split(",") if item.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            items = [item for item in value if str(item).strip()]
+        else:
+            items = []
+        for item in items:
+            add(item)
+    return result
+
+
+def market_account_row_market(row):
+    if isinstance(row, dict):
+        for key in ("market", "exchange", "exchange_id", "market_id", "m_strExchangeID"):
+            market = normalize_market_code(row.get(key))
+            if market:
+                return market
+        for key in ("stock_code", "code", "security_code"):
+            market = stock_code_market(row.get(key))
+            if market:
+                return market
+        instrument = str(row.get("m_strInstrumentID") or row.get("instrument_id") or "").strip()
+        exchange = normalize_market_code(row.get("m_strExchangeID") or row.get("exchange_id"))
+        if instrument and exchange:
+            return exchange
+        if instrument:
+            market = stock_code_market(instrument)
+            if market:
+                return market
+    return stock_code_market(row)
+
+
 def default_market_bridge_id(account_id, account_type="STOCK", parent_bridge_id=None, market=""):
     market = normalize_market_code(market)
     if market not in MARKET_ROUTE_MARKETS:
@@ -509,6 +609,42 @@ def normalize_market_bridge_config(value, account_id="", account_type="STOCK", p
                 "enabled": parse_config_bool(item.get("enabled"), True),
             }
     return result
+
+
+def account_config_market_bridge_ids(config, account_id="", account_type="STOCK", parent_bridge_id=None):
+    if not isinstance(config, dict):
+        return []
+    if not parse_config_bool(config.get("market_routing_enabled"), False):
+        return []
+    routes = normalize_market_bridge_config(
+        config.get("market_bridges") or {},
+        account_id=str(config.get("account_id") or account_id or "").strip(),
+        account_type=normalize_account_type(config.get("account_type") or account_type or "STOCK"),
+        parent_bridge_id=config.get("bridge_id") or parent_bridge_id,
+        enabled=True,
+    )
+    bridge_ids = []
+    for route in routes.values():
+        if not isinstance(route, dict):
+            continue
+        if route.get("enabled", True) is False:
+            continue
+        bridge_id = normalize_bridge_id(route.get("bridge_id") or "")
+        if bridge_id and bridge_id not in bridge_ids:
+            bridge_ids.append(bridge_id)
+    return bridge_ids
+
+
+def account_config_has_market_bridge(config, bridge_id, account_id="", account_type="STOCK", parent_bridge_id=None):
+    bridge_id = normalize_bridge_id(bridge_id or "")
+    if not bridge_id:
+        return False
+    return bridge_id in account_config_market_bridge_ids(
+        config,
+        account_id=account_id,
+        account_type=account_type,
+        parent_bridge_id=parent_bridge_id,
+    )
 
 
 def get_lan_ip():
@@ -2061,6 +2197,8 @@ def _advanced_mode_readiness(bridge_id=None):
 def resolve_bridge_id(account_id=None, bridge_id=None, account_type=None, account_key=None):
     account_id = str(account_id or "").strip()
     account_key = str(account_key or "").strip()
+    raw_bridge_id = str(bridge_id or "").strip()
+    requested_bridge_id = normalize_bridge_id(raw_bridge_id) if raw_bridge_id else ""
     if account_id or account_key:
         runtime = WEB_CONFIG.account_config(
             account_id=account_id,
@@ -2069,7 +2207,38 @@ def resolve_bridge_id(account_id=None, bridge_id=None, account_type=None, accoun
             account_key=account_key,
         ) if WEB_CONFIG is not None else None
         if runtime and runtime.get("bridge_id"):
-            return normalize_bridge_id(runtime.get("bridge_id"))
+            runtime_bridge_id = normalize_bridge_id(runtime.get("bridge_id"))
+            if (
+                requested_bridge_id
+                and requested_bridge_id != runtime_bridge_id
+                and account_config_has_market_bridge(
+                    runtime,
+                    requested_bridge_id,
+                    account_id=account_id,
+                    account_type=account_type or runtime.get("account_type") or "STOCK",
+                    parent_bridge_id=runtime_bridge_id,
+                )
+            ):
+                return requested_bridge_id
+            return runtime_bridge_id
+        if requested_bridge_id and WEB_CONFIG is not None:
+            for row_key, row in WEB_CONFIG.account_configs().items():
+                if not isinstance(row, dict):
+                    continue
+                if account_key and account_key not in (str(row_key or "").strip(), str(row.get("account_key") or "").strip()):
+                    continue
+                if account_id and str(row.get("account_id") or "").strip() != account_id:
+                    continue
+                if account_type not in (None, "") and normalize_account_type(row.get("account_type") or "STOCK") != normalize_account_type(account_type):
+                    continue
+                if account_config_has_market_bridge(
+                    row,
+                    requested_bridge_id,
+                    account_id=account_id,
+                    account_type=account_type or row.get("account_type") or "STOCK",
+                    parent_bridge_id=row.get("bridge_id") or DEFAULT_BRIDGE_ID,
+                ):
+                    return requested_bridge_id
         if WEB_CONFIG is not None:
             pair_key = account_key or account_key_for(account_id, account_type or "STOCK", bridge_id or DEFAULT_BRIDGE_ID)
             pair = WEB_CONFIG.account_pairs().get(pair_key)
@@ -2085,9 +2254,8 @@ def resolve_bridge_id(account_id=None, bridge_id=None, account_type=None, accoun
                     break
             if pair and pair.get("bridge_id"):
                 return normalize_bridge_id(pair.get("bridge_id"))
-    raw_bridge_id = str(bridge_id or "").strip()
-    if raw_bridge_id:
-        return normalize_bridge_id(raw_bridge_id)
+    if requested_bridge_id:
+        return requested_bridge_id
     return DEFAULT_BRIDGE_ID
 
 
@@ -2128,6 +2296,59 @@ def account_market_route_config(account_id=None, account_type=None, bridge_id=No
     if not enabled:
         routes = {}
     return config, routes
+
+
+def account_market_route_entries(account_id=None, account_type=None, bridge_id=None, account_key=None):
+    requested_bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    config, routes = account_market_route_config(
+        account_id=account_id,
+        account_type=account_type,
+        bridge_id=requested_bridge_id,
+        account_key=account_key,
+    )
+    if not parse_config_bool((config or {}).get("market_routing_enabled"), False):
+        return config or {}, []
+    base_bridge_id = normalize_bridge_id((config or {}).get("bridge_id") or requested_bridge_id)
+    if requested_bridge_id and requested_bridge_id != base_bridge_id:
+        return config or {}, []
+    entries = []
+    for market in MARKET_ROUTE_MARKETS:
+        route = (routes or {}).get(market) or {}
+        if route.get("enabled", True) is False:
+            continue
+        child_bridge_id = normalize_bridge_id(route.get("bridge_id") or "")
+        if child_bridge_id:
+            entries.append({
+                "market": market,
+                "bridge_id": child_bridge_id,
+                "route": route,
+            })
+    return config or {}, entries
+
+
+def account_related_bridge_ids(account_id=None, account_type=None, bridge_id=None, account_key=None, include_base=True):
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    config, entries = account_market_route_entries(
+        account_id=account_id,
+        account_type=account_type,
+        bridge_id=bridge_id,
+        account_key=account_key,
+    )
+    result = []
+
+    def add(value):
+        value = normalize_bridge_id(value or "")
+        if value and value not in result:
+            result.append(value)
+
+    if include_base:
+        add((config or {}).get("bridge_id") or bridge_id)
+    if entries:
+        for entry in entries:
+            add(entry.get("bridge_id"))
+    elif not include_base:
+        add(bridge_id)
+    return result
 
 
 def action_supports_market_routing(action, params=None):
@@ -2264,6 +2485,20 @@ def callback_channels():
     return channels
 
 
+def is_pipe_client_closed_error(error):
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    closed_markers = (
+        "cfquant pipe client closed",
+        "cfquant pipe connection closed",
+        "cfquant pipe receive connection closed",
+        "cfquant pipe receive connection missing",
+        "cfquant pipe client not started",
+    )
+    return any(marker in text for marker in closed_markers)
+
+
 class GlobalTxClient(object):
     def __init__(self):
         self._lock = threading.RLock()
@@ -2294,28 +2529,37 @@ class GlobalTxClient(object):
         cooldown_key = (mode, normalize_bridge_id(bridge_id), channel_key)
         if not ignore_cooldown:
             self._check_cooldown(cooldown_key)
-        client = self._get_client(mode)
-        try:
-            result = client.request(
-                action,
-                params or {},
-                timeout=timeout,
-                request_channel=channels[channel_key],
-            )
-            self._cooldown_until.pop(cooldown_key, None)
-            self._last_error.pop(cooldown_key, None)
-            return result
-        except CfquantError:
-            raise
-        except CfquantTimeout as e:
-            if mark_offline_on_timeout:
+        last_error = None
+        for attempt in range(2):
+            client = self._get_client(mode)
+            try:
+                result = client.request(
+                    action,
+                    params or {},
+                    timeout=timeout,
+                    request_channel=channels[channel_key],
+                )
+                self._cooldown_until.pop(cooldown_key, None)
+                self._last_error.pop(cooldown_key, None)
+                return result
+            except CfquantError as e:
+                last_error = e
+                if attempt == 0 and is_pipe_client_closed_error(e):
+                    self._drop_client(mode, client)
+                    continue
+                raise
+            except CfquantTimeout as e:
+                if mark_offline_on_timeout:
+                    self._mark_failed(cooldown_key, e)
+                self._drop_client(mode, client)
+                raise
+            except Exception as e:
+                last_error = e
                 self._mark_failed(cooldown_key, e)
-            self.close(mode)
-            raise
-        except Exception as e:
-            self._mark_failed(cooldown_key, e)
-            self.close(mode)
-            raise
+                self._drop_client(mode, client)
+                raise
+        if last_error is not None:
+            raise last_error
 
     def close(self, mode=None):
         modes = [normalize_transport_mode(mode)] if mode else ["ctypes", "lite", "lttx"]
@@ -2328,6 +2572,21 @@ class GlobalTxClient(object):
                 client.close()
             except Exception:
                 pass
+
+    def _drop_client(self, mode, client=None):
+        mode = normalize_transport_mode(mode)
+        with self._lock:
+            current = self._clients.get(mode)
+            if client is not None and current is not client:
+                return False
+            current = self._clients.pop(mode, None)
+        if current is None:
+            return False
+        try:
+            current.close()
+        except Exception:
+            pass
+        return True
 
     def _check_cooldown(self, cooldown_key):
         now = time.time()
@@ -2650,6 +2909,153 @@ def data_provider_candidates():
     return result
 
 
+def data_account_route_candidates(account_id, account_type, account_key, bridge_id=None, params=None):
+    account_id = str(account_id or "").strip()
+    account_type = normalize_account_type(account_type or "STOCK")
+    account_key = str(account_key or "").strip()
+    target_bridge_id = resolve_bridge_id(
+        account_id=account_id,
+        bridge_id=bridge_id,
+        account_type=account_type,
+        account_key=account_key,
+    )
+    if not account_key and WEB_CONFIG is not None:
+        direct_config = WEB_CONFIG.account_config(
+            account_id=account_id,
+            account_type=account_type,
+            bridge_id=target_bridge_id,
+        ) or {}
+        account_key = str(direct_config.get("account_key") or "").strip()
+        if not account_key:
+            for row in WEB_CONFIG.account_configs().values():
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("account_id") or "").strip() != account_id:
+                    continue
+                if normalize_account_type(row.get("account_type") or "STOCK") != account_type:
+                    continue
+                if account_config_has_market_bridge(
+                    row,
+                    target_bridge_id,
+                    account_id=account_id,
+                    account_type=account_type,
+                    parent_bridge_id=row.get("bridge_id") or DEFAULT_BRIDGE_ID,
+                ):
+                    account_key = str(row.get("account_key") or "").strip()
+                    break
+    config, entries = account_market_route_entries(
+        account_id=account_id,
+        account_type=account_type,
+        bridge_id=target_bridge_id,
+        account_key=account_key,
+    )
+    account_key = account_key or (config or {}).get("account_key") or account_key_for(account_id, account_type, target_bridge_id)
+    requested_markets = data_request_markets(params)
+    candidates = []
+    seen = set()
+
+    def add(candidate_bridge_id, market="", market_routing=False):
+        candidate_bridge_id = normalize_bridge_id(candidate_bridge_id or "")
+        if not candidate_bridge_id or candidate_bridge_id in seen:
+            return
+        seen.add(candidate_bridge_id)
+        candidates.append({
+            "bridge_id": candidate_bridge_id,
+            "market": normalize_market_code(market),
+            "market_routing": bool(market_routing),
+            "base_bridge_id": normalize_bridge_id((config or {}).get("bridge_id") or target_bridge_id),
+            "account_key": account_key,
+        })
+
+    if entries:
+        by_market = {entry.get("market"): entry for entry in entries}
+        for market in requested_markets:
+            entry = by_market.get(market)
+            if entry:
+                add(entry.get("bridge_id"), market=market, market_routing=True)
+        for entry in entries:
+            add(entry.get("bridge_id"), market=entry.get("market"), market_routing=True)
+        add((config or {}).get("bridge_id") or target_bridge_id, market="", market_routing=False)
+    else:
+        add(target_bridge_id, market="", market_routing=False)
+    return candidates
+
+
+def routed_xtdata_account_request(
+    account_id,
+    bridge_id,
+    requested_channel,
+    action,
+    params=None,
+    default_channel="normal",
+    timeout=12.0,
+    mark_offline_on_timeout=True,
+    ignore_cooldown=False,
+    account_type=None,
+    account_key=None,
+):
+    account_id = str(account_id or "").strip()
+    account_type = normalize_account_type(account_type or "STOCK")
+    account_key = str(account_key or "").strip()
+    attempts = []
+    last_error = None
+    candidates = data_account_route_candidates(
+        account_id,
+        account_type,
+        account_key,
+        bridge_id=bridge_id,
+        params=params,
+    )
+    for candidate in candidates:
+        candidate_bridge_id = candidate.get("bridge_id")
+        candidate_account_key = str(candidate.get("account_key") or account_key or "").strip()
+        started = time.perf_counter()
+        try:
+            route = account_request(
+                account_id,
+                candidate_bridge_id,
+                requested_channel,
+                action,
+                params,
+                default_channel=default_channel,
+                timeout=timeout,
+                mark_offline_on_timeout=mark_offline_on_timeout,
+                ignore_cooldown=ignore_cooldown,
+                account_type=account_type,
+                account_key=candidate_account_key,
+                route_market=candidate.get("market") or None,
+            )
+            if attempts:
+                route["fallback"] = True
+                route["fallback_reason"] = str(last_error or "")
+                route["attempts"] = attempts + list(route.get("attempts") or [])
+            route["data_route"] = candidate
+            route["data_route_market"] = candidate.get("market") or ""
+            route["data_route_market_routing"] = bool(candidate.get("market_routing"))
+            return route
+        except Exception as error:
+            last_error = error
+            attempts.append({
+                "bridge_id": candidate_bridge_id,
+                "market": candidate.get("market") or "",
+                "market_routing": bool(candidate.get("market_routing")),
+                "ok": False,
+                "error": str(error),
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            })
+    detail = "; ".join(
+        "%s%s: %s" % (
+            row.get("bridge_id") or "-",
+            ("/%s" % row.get("market")) if row.get("market") else "",
+            row.get("error") or "",
+        )
+        for row in attempts
+    )
+    raise RuntimeError(
+        "%s failed for account %s: %s" % (action, account_id or "--", detail or str(last_error or "no route attempted"))
+    )
+
+
 def data_provider_request(
     action,
     params,
@@ -2664,9 +3070,9 @@ def data_provider_request(
         account_id = str(account.get("account_id") or "").strip()
         account_type = normalize_account_type(account.get("account_type") or "STOCK")
         account_key = str(account.get("account_key") or "").strip()
-        target_bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id or account.get("bridge_id"), account_type=account_type, account_key=account_key)
+        target_bridge_id = bridge_id or account.get("bridge_id")
         try:
-            route = account_request(
+            route = routed_xtdata_account_request(
                 account_id,
                 target_bridge_id,
                 requested_channel,
@@ -2681,12 +3087,15 @@ def data_provider_request(
             )
             route["data_provider"] = account_id
             route["data_provider_account_type"] = account_type
-            route["data_provider_account_key"] = account_key
+            route["data_provider_account_key"] = route.get("account_key") or account_key
             route["provider_fallback"] = bool(attempts)
             route["provider_attempts"] = attempts + [{
                 "account_id": account_id,
                 "account_type": account_type,
-                "account_key": account_key,
+                "account_key": route.get("account_key") or account_key,
+                "bridge_id": route.get("bridge_id"),
+                "market": route.get("data_route_market") or "",
+                "market_routing": bool(route.get("data_route_market_routing")),
                 "ok": True,
                 "mode": route["mode"],
                 "channel": route["channel"],
@@ -2698,11 +3107,17 @@ def data_provider_request(
                 "account_id": account_id,
                 "account_type": account_type,
                 "account_key": account_key,
+                "bridge_id": normalize_bridge_id(target_bridge_id or DEFAULT_BRIDGE_ID),
                 "ok": False,
                 "error": str(error),
             })
     detail = "; ".join(
-        "%s/%s: %s" % (row["account_id"], row.get("account_type") or "STOCK", row.get("error") or "")
+        "%s/%s/%s: %s" % (
+            row["account_id"],
+            row.get("account_type") or "STOCK",
+            row.get("bridge_id") or "-",
+            row.get("error") or "",
+        )
         for row in attempts
     )
     raise RuntimeError(
@@ -2815,6 +3230,8 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
     market_routing_ready = bool(market_route_statuses) and all(
         row.get("ready") for row in market_route_statuses.values()
     )
+    native_ready = advanced_ready if effective_mode == "lttx" else ctypes_ready
+    account_ready = native_ready or market_routing_ready
     return {
         "account_id": account_id,
         "account_type": account_type,
@@ -2826,7 +3243,8 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
         "fallback": fallback,
         "qmt_dir": (config or {}).get("qmt_dir", ""),
         "data_provider": account_key == (WEB_CONFIG.data_provider_account_key() if WEB_CONFIG else ""),
-        "ready": advanced_ready if effective_mode == "lttx" else ctypes_ready,
+        "ready": account_ready,
+        "native_ready": native_ready,
         "status": selected,
         "market_routing_enabled": parse_config_bool((market_config or {}).get("market_routing_enabled"), False),
         "market_routing_ready": market_routing_ready,
@@ -2918,6 +3336,11 @@ class PipeHubManager(object):
             if os.name == "nt":
                 creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+            popen_kwargs = {"creationflags": creationflags, "close_fds": False if os.name == "nt" else True}
+            if os.name == "nt":
+                hidden_kwargs = _hidden_subprocess_kwargs()
+                popen_kwargs.update(hidden_kwargs)
+                popen_kwargs["creationflags"] = creationflags | int(hidden_kwargs.get("creationflags") or 0)
             env = os.environ.copy()
             env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
             env.setdefault("CFQUANT_LOG_DIR", LOG_DIR)
@@ -2933,8 +3356,7 @@ class PipeHubManager(object):
                     stdout=stdout,
                     stderr=stderr,
                     env=env,
-                    creationflags=creationflags,
-                    close_fds=False if os.name == "nt" else True,
+                    **popen_kwargs
                 )
             finally:
                 try:
@@ -2972,6 +3394,7 @@ class PipeHubManager(object):
                     encoding="utf-8",
                     errors="replace",
                     timeout=6.0,
+                    **_hidden_subprocess_kwargs()
                 )
                 if completed.returncode != 0:
                     self._last_error = (completed.stderr or completed.stdout or "").strip()
@@ -3167,7 +3590,7 @@ def route_external_lttx_request(msg):
         return route["result"], meta
     if action.startswith("xtdata."):
         if account_id:
-            route = account_request(
+            route = routed_xtdata_account_request(
                 account_id,
                 params.get("bridge_id"),
                 requested_channel,
@@ -3176,6 +3599,8 @@ def route_external_lttx_request(msg):
                 default_channel=default_channel,
                 timeout=timeout,
                 mark_offline_on_timeout=True,
+                account_type=account_type,
+                account_key=account_key,
             )
         else:
             route = data_provider_request(
@@ -3325,29 +3750,45 @@ class LttxWebRouteServer(object):
         elif action == "xttrader.subscribe":
             account_id = _external_account_id(params) or configured_default_account_id()
             account_type = _external_account_type(params)
-            account_key = _external_account_key(params) or account_key_for(
+            bridge_id = params.get("bridge_id") or resolve_bridge_id(account_id=account_id, account_type=account_type)
+            account_key = _external_account_key(params)
+            account_keys = account_subscription_keys(
                 account_id,
                 account_type,
-                params.get("bridge_id") or resolve_bridge_id(account_id=account_id, account_type=account_type),
+                bridge_id,
+                account_key,
             )
             if account_id:
                 with self._lock:
-                    self._account_subscribers.setdefault(account_key, set()).add(client_id)
+                    for item_key in account_keys:
+                        self._account_subscribers.setdefault(item_key, set()).add(client_id)
         elif action == "xttrader.unsubscribe":
             account_id = _external_account_id(params)
             account_type = _external_account_type(params)
             account_key = _external_account_key(params)
-            if account_id and not account_key:
-                account_key = account_key_for(
+            account_keys = []
+            if account_id:
+                bridge_id = params.get("bridge_id") or resolve_bridge_id(account_id=account_id, account_type=account_type, account_key=account_key)
+                account_keys = account_subscription_keys(
                     account_id,
                     account_type,
-                    params.get("bridge_id") or resolve_bridge_id(account_id=account_id, account_type=account_type),
+                    bridge_id,
+                    account_key,
                 )
             with self._lock:
-                if account_key:
+                if account_keys:
+                    for item_key in account_keys:
+                        subscribers = self._account_subscribers.get(item_key)
+                        if subscribers:
+                            subscribers.discard(client_id)
+                            if not subscribers:
+                                self._account_subscribers.pop(item_key, None)
+                elif account_key:
                     subscribers = self._account_subscribers.get(account_key)
                     if subscribers:
                         subscribers.discard(client_id)
+                        if not subscribers:
+                            self._account_subscribers.pop(account_key, None)
                 else:
                     for subscribers in self._account_subscribers.values():
                         subscribers.discard(client_id)
@@ -3373,9 +3814,12 @@ class LttxWebRouteServer(object):
         if not account_id and isinstance(msg.get("data"), dict):
             account_id = _external_account_id(msg.get("data"))
             account_type = _external_account_type(msg.get("data"))
-        account_key = account_key_for(account_id, account_type, bridge_id) if account_id else ""
+        account_keys = account_subscription_keys(account_id, account_type, bridge_id, msg.get("account_key")) if account_id else []
         with self._lock:
-            client_ids = sorted(self._account_subscribers.get(account_key, set()))
+            client_ids_set = set()
+            for account_key in account_keys:
+                client_ids_set.update(self._account_subscribers.get(account_key, set()))
+            client_ids = sorted(client_ids_set)
         for client_id in client_ids:
             self._push_event(client_id, event, msg.get("data"))
 
@@ -3621,13 +4065,32 @@ def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
     hub = PIPE_HUB.status()
     hub_status = hub.get("status") or {}
     connected_channels = set(hub_status.get("qmt_channels") or [])
+    rx_raw = hub_status.get("qmt_rx_channels")
+    tx_raw = hub_status.get("qmt_tx_channels")
+    ready_raw = hub_status.get("qmt_ready_channels")
+    has_directional_channels = isinstance(rx_raw, list) or isinstance(tx_raw, list) or isinstance(ready_raw, list)
+    rx_channels = set(rx_raw or [])
+    tx_channels = set(tx_raw or [])
+    ready_channels = set(ready_raw or [])
+    hub_running = bool(hub.get("running"))
+
+    def pipe_channel_ready(channel):
+        if has_directional_channels:
+            return channel in ready_channels or (channel in rx_channels and channel in tx_channels)
+        return channel in connected_channels
+
+    def pipe_channel_online(channel):
+        return bool(hub_running and pipe_channel_ready(channel))
+
     now = time.time()
+    normal_online = pipe_channel_online(channels["normal"])
+    trade_online = pipe_channel_online(channels["trade"])
     result = {
         "bridge_id": bridge_id,
         "bridge_name": bridge_config(bridge_id)["name"],
         "runtime_report": RUNTIME_VERSIONS.latest(bridge_id),
         "normal": {
-            "online": bool(hub.get("running") and channels["normal"] in connected_channels),
+            "online": normal_online,
             "channel": channels["normal"],
             "probe_action": "pipe_hub.status",
             "status": {
@@ -3635,11 +4098,14 @@ def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
                 "transport": "pipe",
                 "pipe_name": hub.get("pipe_name"),
                 "request_channel": channels["normal"],
-                "pipe_connected": channels["normal"] in connected_channels,
+                "pipe_connected": normal_online,
+                "pipe_ready_channel": pipe_channel_ready(channels["normal"]),
+                "pipe_rx_connected": channels["normal"] in rx_channels,
+                "pipe_tx_connected": channels["normal"] in tx_channels,
             },
         },
         "trade": {
-            "online": bool(hub.get("running") and channels["trade"] in connected_channels),
+            "online": trade_online,
             "channel": channels["trade"],
             "probe_action": "pipe_hub.status",
             "status": {
@@ -3647,7 +4113,10 @@ def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
                 "transport": "pipe",
                 "pipe_name": hub.get("pipe_name"),
                 "request_channel": channels["trade"],
-                "pipe_connected": channels["trade"] in connected_channels,
+                "pipe_connected": trade_online,
+                "pipe_ready_channel": pipe_channel_ready(channels["trade"]),
+                "pipe_rx_connected": channels["trade"] in rx_channels,
+                "pipe_tx_connected": channels["trade"] in tx_channels,
             },
         },
         "checked_at": now,
@@ -3670,11 +4139,12 @@ def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
 
 
 class WebSocketCallbackClient(object):
-    def __init__(self, sock, bridge_id="", account_id="", account_type="", event_name="", event_prefix="", job_id=""):
+    def __init__(self, sock, bridge_id="", account_id="", account_type="", account_key="", event_name="", event_prefix="", job_id=""):
         self.sock = sock
         self.bridge_id = normalize_bridge_id(bridge_id) if bridge_id else ""
         self.account_id = str(account_id or "").strip()
         self.account_type = normalize_account_type(account_type) if account_type not in ("", None) else ""
+        self.account_key = str(account_key or "").strip()
         self.event_name = str(event_name or "").strip()
         self.event_prefix = str(event_prefix or "").strip()
         self.job_id = str(job_id or "").strip()
@@ -3682,8 +4152,16 @@ class WebSocketCallbackClient(object):
         self.alive = True
 
     def matches(self, event):
-        if self.bridge_id and normalize_bridge_id(CallbackEventStore.event_bridge_id_static(event) or "default") != self.bridge_id:
-            return False
+        if self.bridge_id:
+            event_bridge_id = normalize_bridge_id(CallbackEventStore.event_bridge_id_static(event) or "default")
+            bridge_ids = account_related_bridge_ids(
+                account_id=self.account_id,
+                account_type=self.account_type or None,
+                bridge_id=self.bridge_id,
+                account_key=self.account_key,
+            ) if (self.account_id or self.account_key) else [self.bridge_id]
+            if event_bridge_id not in bridge_ids:
+                return False
         if self.account_id and CallbackEventStore.event_account_id_static(event) != self.account_id:
             return False
         if self.account_type:
@@ -3853,6 +4331,7 @@ class QuoteSubscriptionStore(object):
         body = body or {}
         markets = self._normalize_markets(body.get("markets") or body.get("code_list") or ["SH", "SZ"])
         requested_channel = body.get("channel")
+        timeout = request_timeout_value(body.get("timeout"), default=12.0)
         started = time.perf_counter()
         self.start()
         with self._lock:
@@ -3890,7 +4369,7 @@ class QuoteSubscriptionStore(object):
             {"code_list": markets},
             requested_channel=requested_channel,
             default_channel="normal",
-            timeout=12.0,
+            timeout=timeout,
             bridge_id=body.get("bridge_id"),
         )
         result = route["result"]
@@ -3952,7 +4431,7 @@ class QuoteSubscriptionStore(object):
             account_id=account_id,
             account_type=account_type,
             account_key=account_key,
-            timeout=8.0,
+            timeout=request_timeout_value((body or {}).get("timeout"), default=8.0, maximum=60.0),
         )
         with self._lock:
             self._remove_subscription_locked(subscribe_id)
@@ -4165,10 +4644,20 @@ class CallbackEventStore(object):
         self._running = True
         try:
             CLIENTS.add_callback("__event__", self._on_client_event)
-            safe_print("cfquant callback listeners started in mixed mode")
         except Exception as e:
-            self._running = False
-            safe_print("cfquant callback listener start failed: %s" % e)
+            safe_print("cfquant callback CLIENTS listener start failed: %s" % e)
+        try:
+            pipe_count = self._start_pipe_clients()
+            safe_print("cfquant callback pipe listeners started count=%s channels=%s" % (pipe_count, ",".join(self.channels)))
+        except Exception as e:
+            safe_print("cfquant callback pipe listeners start failed: %s" % e)
+        try:
+            lttx_count = self._start_lttx_client()
+            if lttx_count:
+                safe_print("cfquant callback LTtx listener started count=%s channels=%s" % (lttx_count, ",".join(self.channels)))
+        except Exception as e:
+            safe_print("cfquant callback LTtx listener start failed: %s" % e)
+        safe_print("cfquant callback listeners started in mixed mode")
 
     def close(self):
         self._running = False
@@ -4177,6 +4666,10 @@ class CallbackEventStore(object):
         except Exception:
             pass
         for client in list(self._pipe_clients.values()):
+            try:
+                client.remove_callback("__event__", self._on_channel_event)
+            except Exception:
+                pass
             try:
                 client.remove_callback("__event__", self._on_client_event)
             except Exception:
@@ -4219,20 +4712,27 @@ class CallbackEventStore(object):
         except Exception:
             pass
 
-    def latest(self, since=0, limit=200, bridge_id=None, account_id=None, account_type=None, event_name=None, event_prefix=None, job_id=None):
+    def latest(self, since=0, limit=200, bridge_id=None, account_id=None, account_type=None, account_key=None, event_name=None, event_prefix=None, job_id=None):
         bridge_id = normalize_bridge_id(bridge_id) if bridge_id else None
         account_id = str(account_id or "").strip()
         account_type = normalize_account_type(account_type) if account_type not in ("", None) else ""
+        account_key = str(account_key or "").strip()
         event_name = str(event_name or "").strip()
         event_prefix = str(event_prefix or "").strip()
         job_id = str(job_id or "").strip()
         with self._lock:
             rows = [row for row in self._events if row.get("seq", 0) > since]
             if bridge_id:
+                bridge_ids = account_related_bridge_ids(
+                    account_id=account_id,
+                    account_type=account_type or None,
+                    bridge_id=bridge_id,
+                    account_key=account_key,
+                ) if (account_id or account_key) else [bridge_id]
                 rows = [
                     row
                     for row in rows
-                    if normalize_bridge_id(self.event_bridge_id_static(row) or "default") == bridge_id
+                    if normalize_bridge_id(self.event_bridge_id_static(row) or "default") in bridge_ids
                 ]
             if account_id:
                 rows = [
@@ -4244,7 +4744,7 @@ class CallbackEventStore(object):
                 rows = [
                     row
                     for row in rows
-                    if self.event_account_type_static(row) == account_type
+                    if self.event_account_type_static(row) in ("", account_type)
                 ]
             if event_name:
                 rows = [
@@ -4272,7 +4772,7 @@ class CallbackEventStore(object):
                 raw = self._tx.Q.get()
                 event = self._parse(raw)
                 if event:
-                    self._append(event)
+                    self._append(event, source="channel")
             except Exception as e:
                 if self._running:
                     safe_print("callback listener error: %s" % e)
@@ -4284,6 +4784,13 @@ class CallbackEventStore(object):
         if not isinstance(raw, str):
             return None
         key, value = raw.split("|", 1) if "|" in raw else ("", raw)
+        msg = loads_message(raw)
+        if isinstance(msg, dict) and msg.get("type") == "event":
+            event = dict(msg)
+            event["data"] = decode_value(event.get("data"))
+            if key:
+                event.setdefault("key", key)
+            return event
         try:
             payload = json.loads(value)
         except Exception:
@@ -4293,7 +4800,7 @@ class CallbackEventStore(object):
             return payload
         return {"key": key, "data": payload}
 
-    def _append(self, event):
+    def _append(self, event, source="client"):
         with self._lock:
             self._seq += 1
             row = dict(event)
@@ -4324,13 +4831,68 @@ class CallbackEventStore(object):
             if len(self._events) > self.max_events:
                 self._events = self._events[-self.max_events:]
         WS_CALLBACKS.broadcast(row)
+        if source == "channel":
+            self._forward_to_lttx_route(row)
+
+    def _forward_to_lttx_route(self, row):
+        event = str(row.get("event") or "")
+        if not event.startswith("trader:"):
+            return
+        try:
+            LTTX_WEB_ROUTE._on_client_event(row)
+        except Exception as e:
+            safe_print("callback event forward to LTtx route failed event=%s error=%s" % (event, e))
 
     def _on_client_event(self, event):
         if not isinstance(event, dict):
             return
         if event.get("type") != "event":
             return
-        self._append(event)
+        self._append(event, source="client")
+
+    def _normalize_channel_event(self, event):
+        data = event.get("data") if isinstance(event, dict) else None
+        if not isinstance(data, dict):
+            return event
+        if data.get("type") != "event" or not data.get("event"):
+            return event
+        if event.get("event") and data.get("event") != event.get("event"):
+            return event
+        if not isinstance(data.get("data"), dict):
+            return event
+        normalized = dict(data)
+        if event.get("client_id") and not normalized.get("client_id"):
+            normalized["client_id"] = event.get("client_id")
+        if event.get("subscription_id") and not normalized.get("subscription_id"):
+            normalized["subscription_id"] = event.get("subscription_id")
+        if isinstance(event.get("meta"), dict) and not normalized.get("meta"):
+            normalized["meta"] = event.get("meta")
+        return normalized
+
+    def _on_channel_event(self, event):
+        if not isinstance(event, dict):
+            return
+        if event.get("type") != "event":
+            return
+        event = self._normalize_channel_event(event)
+        self._append(event, source="channel")
+
+    def _start_lttx_client(self):
+        channels = [str(channel or "").strip() for channel in self.channels]
+        channels = [channel for channel in channels if channel]
+        if not channels:
+            return 0
+        if not lttx_server_reachable():
+            safe_print("callback LTtx listener skipped: LTtx server is not reachable")
+            return 0
+        tx = txl(LTTX_HOST, LTTX_PORT, "LTtx", show=False)
+        tx.start_tx()
+        tx.start_txg("@".join(channels))
+        self._tx = tx
+        self._thread = threading.Thread(target=self._loop)
+        self._thread.daemon = True
+        self._thread.start()
+        return len(channels)
 
     def _start_pipe_clients(self):
         from cfquant.pipe_client import PipeRpcClient
@@ -4353,7 +4915,7 @@ class CallbackEventStore(object):
             )
             try:
                 client.start()
-                client.add_callback("__event__", self._on_client_event)
+                client.add_callback("__event__", self._on_channel_event)
                 self._pipe_clients[channel] = client
                 started += 1
             except Exception as e:
@@ -4366,6 +4928,7 @@ class CallbackEventStore(object):
         if started <= 0:
             detail = "; ".join(errors)
             raise RuntimeError("no callback pipe clients started%s" % (": " + detail if detail else ""))
+        return started
 
     def _event_account_id(self, event):
         return self.event_account_id_static(event)
@@ -4412,11 +4975,23 @@ class CallbackEventStore(object):
             return ""
         matches = []
         for config in enabled_account_configs().values():
-            if normalize_bridge_id(config.get("bridge_id") or DEFAULT_BRIDGE_ID) != bridge_id:
-                continue
             if str(config.get("account_id") or "").strip() != account_id:
                 continue
-            matches.append(normalize_account_type(config.get("account_type") or "STOCK"))
+            candidate_bridge_ids = [normalize_bridge_id(config.get("bridge_id") or DEFAULT_BRIDGE_ID)]
+            if parse_config_bool(config.get("market_routing_enabled"), False):
+                market_routes = normalize_market_bridge_config(
+                    config.get("market_bridges") or {},
+                    account_id=config.get("account_id") or "",
+                    account_type=config.get("account_type") or "STOCK",
+                    parent_bridge_id=config.get("bridge_id") or DEFAULT_BRIDGE_ID,
+                    enabled=True,
+                )
+                for route in market_routes.values():
+                    child_bridge_id = normalize_bridge_id(route.get("bridge_id") or "")
+                    if child_bridge_id and child_bridge_id not in candidate_bridge_ids:
+                        candidate_bridge_ids.append(child_bridge_id)
+            if bridge_id in candidate_bridge_ids:
+                matches.append(normalize_account_type(config.get("account_type") or "STOCK"))
         unique = sorted(set(matches))
         return unique[0] if len(unique) == 1 else ""
 
@@ -5164,6 +5739,7 @@ class CfquantUpdater(object):
                     encoding="utf-8",
                     errors="replace",
                     timeout=UPDATE_REMOTE_TIMEOUT_SECONDS,
+                    **_hidden_subprocess_kwargs()
                 )
                 output = (completed.stdout or "").strip()
                 if completed.returncode == 0 and output:
@@ -5215,6 +5791,7 @@ class CfquantUpdater(object):
                         encoding="utf-8",
                         errors="replace",
                         timeout=10,
+                        **_hidden_subprocess_kwargs()
                     )
                     if completed.returncode == 0:
                         return (completed.stdout or "").strip()
@@ -5245,6 +5822,7 @@ class CfquantUpdater(object):
                 encoding="utf-8",
                 errors="replace",
                 timeout=120,
+                **_hidden_subprocess_kwargs()
             )
             if completed.returncode == 0:
                 return {
@@ -5342,6 +5920,7 @@ class CfquantUpdater(object):
                 encoding="utf-8",
                 errors="replace",
                 timeout=10,
+                **_hidden_subprocess_kwargs()
             )
             if completed.returncode == 0:
                 return (completed.stdout or "").strip()
@@ -6438,6 +7017,7 @@ def netstat_port_processes(port):
             encoding="utf-8",
             errors="replace",
             timeout=2.5,
+            **_hidden_subprocess_kwargs()
         )
     except Exception as e:
         safe_print("netstat query failed: %s" % e)
@@ -6592,6 +7172,11 @@ def start_lttx_server():
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+    popen_kwargs = {"creationflags": creationflags, "close_fds": False if os.name == "nt" else True}
+    if os.name == "nt":
+        hidden_kwargs = _hidden_subprocess_kwargs()
+        popen_kwargs.update(hidden_kwargs)
+        popen_kwargs["creationflags"] = creationflags | int(hidden_kwargs.get("creationflags") or 0)
     env = os.environ.copy()
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     env.setdefault("CFQUANT_LOG_DIR", LOG_DIR)
@@ -6608,8 +7193,7 @@ def start_lttx_server():
             stdout=stdout,
             stderr=stderr,
             env=env,
-            creationflags=creationflags,
-            close_fds=False if os.name == "nt" else True,
+            **popen_kwargs
         )
     except Exception:
         try:
@@ -6695,6 +7279,8 @@ def stop_lttx_server(full_exit=False):
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=6.0,
+            **_hidden_subprocess_kwargs()
         )
         results.append({
             "pid": pid,
@@ -6766,6 +7352,14 @@ def parse_sections(value):
 
 def parse_bool(value):
     return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def request_timeout_value(value, default=12.0, minimum=0.5, maximum=180.0):
+    try:
+        timeout = float(value)
+    except Exception:
+        timeout = float(default)
+    return max(float(minimum), min(float(maximum), timeout))
 
 
 def probe_bridge_status(bridge_id=DEFAULT_BRIDGE_ID, timeout=STATUS_PROBE_TIMEOUT_SECONDS, client=None, mode=None):
@@ -7123,6 +7717,7 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
                 channel,
                 action,
                 payload,
+                default_channel=channel,
                 timeout=timeout,
                 mark_offline_on_timeout=False,
                 account_type=account_type,
@@ -7144,6 +7739,282 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
                 "error": str(e),
                 "latency_ms": round((time.perf_counter() - started) * 1000, 2),
             }
+    return result
+
+
+def account_section_ok(section):
+    return isinstance(section, dict) and bool(section.get("ok"))
+
+
+def account_section_data(section):
+    if not isinstance(section, dict):
+        return None
+    return section.get("data")
+
+
+def account_data_has_value(value):
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple, set, dict, str)):
+        return bool(value)
+    return True
+
+
+def market_row_with_source(row, market, bridge_id):
+    if isinstance(row, dict):
+        result = dict(row)
+    else:
+        result = {"value": row}
+    result.setdefault("market", market)
+    result.setdefault("source_market", market)
+    result.setdefault("bridge_id", bridge_id)
+    result.setdefault("source_bridge_id", bridge_id)
+    return result
+
+
+def market_section_rows(data, market, bridge_id, filter_market=False):
+    if data is None:
+        return []
+    if isinstance(data, list):
+        rows = data
+    else:
+        rows = [data]
+    result = []
+    for row in rows:
+        if filter_market:
+            row_market = market_account_row_market(row)
+            if row_market and market and row_market != market:
+                continue
+        result.append(market_row_with_source(row, market, bridge_id))
+    return result
+
+
+def market_section_error(section):
+    if not isinstance(section, dict):
+        return "missing section"
+    return str(section.get("error") or "query failed")
+
+
+def merge_market_account_section(section, child_results, started_at):
+    successes = []
+    errors = []
+    market_results = {}
+    market_counts = {}
+    max_latency = 0.0
+    warming_up = False
+    for child in child_results:
+        market = child.get("market") or ""
+        bridge_id = normalize_bridge_id(child.get("bridge_id") or "")
+        row = child.get(section) if isinstance(child, dict) else None
+        if row is None and isinstance(child, dict) and child.get("error"):
+            row = {"ok": False, "error": child.get("error")}
+        if isinstance(row, dict):
+            row = dict(row)
+            row.setdefault("market", market)
+            row.setdefault("bridge_id", bridge_id)
+            if row.get("warming_up"):
+                warming_up = True
+            try:
+                max_latency = max(max_latency, float(row.get("latency_ms") or 0))
+            except Exception:
+                pass
+        else:
+            row = {"ok": False, "error": "missing section", "market": market, "bridge_id": bridge_id}
+        market_results[market] = row
+        if account_section_ok(row):
+            data = account_section_data(row)
+            rows = None
+            if section in MARKET_ACCOUNT_ROW_SECTIONS:
+                rows = market_section_rows(data, market, bridge_id, filter_market=True)
+                market_counts[market] = len(rows)
+            else:
+                market_counts[market] = len(data) if isinstance(data, list) else (1 if account_data_has_value(data) else 0)
+            successes.append((market, bridge_id, row, rows))
+        else:
+            errors.append("%s/%s: %s" % (market or "-", bridge_id or "-", market_section_error(row)))
+            market_counts[market] = 0
+
+    base = {
+        "market_routing": True,
+        "market_results": market_results,
+        "market_counts": market_counts,
+        "latency_ms": round(max(max_latency, (time.perf_counter() - started_at) * 1000), 2),
+    }
+    if section == "asset":
+        chosen = None
+        for item in successes:
+            if account_data_has_value(account_section_data(item[2])):
+                chosen = item
+                break
+        if chosen is None and successes:
+            chosen = successes[0]
+        if chosen is None:
+            base.update({
+                "ok": False,
+                "error": "; ".join(errors) or "market routed account asset is warming up",
+                "cached": any(isinstance(row, dict) and row.get("cached") for row in market_results.values()),
+                "warming_up": warming_up,
+            })
+            return base
+        market, bridge_id, row, _rows = chosen
+        result = dict(row)
+        result.update(base)
+        result["ok"] = True
+        result["source_market"] = market
+        result["source_bridge_id"] = bridge_id
+        if errors:
+            result["partial_errors"] = errors
+        return result
+
+    merged = []
+    for market, bridge_id, row, rows in successes:
+        if rows is None:
+            rows = market_section_rows(account_section_data(row), market, bridge_id)
+        merged.extend(rows)
+    if not successes:
+        base.update({
+            "ok": False,
+            "data": [],
+            "error": "; ".join(errors) or "market routed account data is warming up",
+            "cached": any(isinstance(row, dict) and row.get("cached") for row in market_results.values()),
+            "warming_up": warming_up,
+        })
+        return base
+    base.update({
+        "ok": True,
+        "data": merged,
+        "source_markets": [market for market, _bridge_id, _row, _rows in successes],
+        "cached": all(isinstance(row, dict) and row.get("cached") for _market, _bridge_id, row, _rows in successes),
+    })
+    if errors:
+        base["partial_errors"] = errors
+    return base
+
+
+def merge_market_account_results(base_bridge_id, channel, account_id, sections, child_results, force=False, refresh_queued=False, account_type="STOCK", account_key=None):
+    started_at = time.perf_counter()
+    account_type = normalize_account_type(account_type)
+    account_key = account_key or account_key_for(account_id, account_type, base_bridge_id)
+    result = {
+        "bridge_id": base_bridge_id,
+        "bridge_name": bridge_config(base_bridge_id)["name"],
+        "account_id": account_id,
+        "account_type": account_type,
+        "account_type_label": account_type_label(account_type),
+        "account_key": account_key,
+        "channel": channel,
+        "market_routing": True,
+        "market_account_query": True,
+        "market_routes": {
+            child.get("market"): {
+                "market": child.get("market"),
+                "bridge_id": child.get("bridge_id"),
+                "channel": child.get("channel") or channel,
+                "ok": not bool(child.get("error")),
+                "error": child.get("error", ""),
+            }
+            for child in child_results
+        },
+        "cache": {
+            "enabled": any(bool((child.get("cache") or {}).get("enabled")) for child in child_results if isinstance(child, dict)),
+            "force": bool(force),
+            "refresh_queued": bool(refresh_queued) or any(bool((child.get("cache") or {}).get("refresh_queued")) for child in child_results if isinstance(child, dict)),
+        },
+    }
+    checked_times = []
+    max_age = 0.0
+    for child in child_results:
+        cache = child.get("cache") if isinstance(child, dict) else {}
+        if not isinstance(cache, dict):
+            continue
+        if cache.get("interval_seconds") is not None:
+            result["cache"]["interval_seconds"] = cache.get("interval_seconds")
+        if cache.get("checked_at_text"):
+            checked_times.append(cache.get("checked_at_text"))
+        try:
+            max_age = max(max_age, float(cache.get("max_age_ms") or 0))
+        except Exception:
+            pass
+    if checked_times:
+        result["cache"]["checked_at_text"] = min(checked_times)
+    if max_age:
+        result["cache"]["max_age_ms"] = round(max_age, 2)
+    for section in sections:
+        result[section] = merge_market_account_section(section, child_results, started_at)
+    return result
+
+
+def market_child_section_count(child, section, market):
+    if not isinstance(child, dict):
+        return 0
+    row = child.get(section)
+    if not account_section_ok(row):
+        return 0
+    data = account_section_data(row)
+    if section in MARKET_ACCOUNT_ROW_SECTIONS:
+        return len(market_section_rows(data, market, child.get("bridge_id"), filter_market=True))
+    return len(data) if isinstance(data, list) else (1 if account_data_has_value(data) else 0)
+
+
+def market_child_needs_normal_probe(child, sections, market):
+    if not isinstance(child, dict) or child.get("error"):
+        return True
+    for section in sections:
+        row = child.get(section)
+        if not account_section_ok(row):
+            return True
+        if section == "positions" and market_child_section_count(child, section, market) <= 0:
+            return True
+    return False
+
+
+def merge_market_child_channel_results(primary, fallback, market, sections):
+    if not isinstance(primary, dict):
+        return fallback if isinstance(fallback, dict) else primary
+    if not isinstance(fallback, dict):
+        return primary
+    result = dict(primary)
+    primary_error = str(primary.get("error") or "")
+    fallback_error = str(fallback.get("error") or "")
+    primary_channel = primary.get("channel") or "trade"
+    fallback_channel = fallback.get("channel") or "normal"
+    result["channel_attempts"] = [
+        {
+            "channel": primary_channel,
+            "ok": not bool(primary_error),
+            "error": primary_error,
+        },
+        {
+            "channel": fallback_channel,
+            "ok": not bool(fallback_error),
+            "error": fallback_error,
+        },
+    ]
+    result["normal_probe"] = True
+    used_fallback = False
+    if primary_error and not fallback_error:
+        result.update(fallback)
+        used_fallback = True
+    for section in sections:
+        primary_row = primary.get(section)
+        fallback_row = fallback.get(section)
+        if not isinstance(fallback_row, dict):
+            continue
+        use_fallback = False
+        if not account_section_ok(primary_row) and account_section_ok(fallback_row):
+            use_fallback = True
+        elif section == "positions" and account_section_ok(primary_row) and account_section_ok(fallback_row):
+            primary_count = market_child_section_count(primary, section, market)
+            fallback_count = market_child_section_count(fallback, section, market)
+            use_fallback = fallback_count > primary_count
+        if use_fallback:
+            result[section] = fallback_row
+            result.setdefault("section_channels", {})[section] = fallback_channel
+            used_fallback = True
+        elif not account_section_ok(fallback_row):
+            result.setdefault("fallback_channel_errors", {})[section] = market_section_error(fallback_row)
+    if used_fallback and primary_channel != fallback_channel:
+        result["channel"] = "%s/%s" % (primary_channel, fallback_channel)
     return result
 
 
@@ -7171,7 +8042,7 @@ class AccountDataCache(object):
         self._running = False
         self._stop_event.set()
 
-    def get(self, bridge_id, channel, account_id, sections, force=False, subscribe=True, account_type="STOCK", account_key=None):
+    def get(self, bridge_id, channel, account_id, sections, force=False, subscribe=True, account_type="STOCK", account_key=None, timeout=ACCOUNT_QUERY_TIMEOUT_SECONDS):
         bridge_id = normalize_bridge_id(bridge_id)
         account_type = normalize_account_type(account_type)
         account_key = account_key or account_key_for(account_id, account_type, bridge_id)
@@ -7179,7 +8050,7 @@ class AccountDataCache(object):
         if not sections:
             return {"bridge_id": bridge_id, "account_id": account_id, "account_type": account_type, "account_key": account_key, "channel": channel}
         if not subscribe:
-            live = query_account_live(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
+            live = query_account_live(bridge_id, channel, account_id, sections, timeout=timeout, account_type=account_type, account_key=account_key)
             live["cache"] = {
                 "enabled": False,
                 "force": bool(force),
@@ -7188,7 +8059,7 @@ class AccountDataCache(object):
             return live
         self._subscribe(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
         if force:
-            live = query_account_live(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
+            live = query_account_live(bridge_id, channel, account_id, sections, timeout=timeout, account_type=account_type, account_key=account_key)
             self._store_result(bridge_id, channel, account_id, live, sections, account_type=account_type, account_key=account_key)
             return self._build_result(bridge_id, channel, account_id, sections, force=True, account_type=account_type, account_key=account_key)
 
@@ -7208,6 +8079,107 @@ class AccountDataCache(object):
         elif self._needs_refresh(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key):
             self._wake()
         return self._build_result(bridge_id, channel, account_id, sections, force=False, account_type=account_type, account_key=account_key)
+
+    def get_market_routed(self, bridge_id, channel, account_id, sections, force=False, subscribe=True, account_type="STOCK", account_key=None, timeout=ACCOUNT_QUERY_TIMEOUT_SECONDS):
+        base_bridge_id = normalize_bridge_id(bridge_id)
+        account_type = normalize_account_type(account_type)
+        base_config, entries = account_market_route_entries(
+            account_id=account_id,
+            account_type=account_type,
+            bridge_id=base_bridge_id,
+            account_key=account_key,
+        )
+        account_key = account_key or (base_config or {}).get("account_key") or account_key_for(account_id, account_type, base_bridge_id)
+        sections = [section for section in sections if section in ACCOUNT_ACTIONS]
+        if not entries or not sections:
+            return self.get(
+                base_bridge_id,
+                channel,
+                account_id,
+                sections,
+                force=force,
+                subscribe=subscribe,
+                account_type=account_type,
+                account_key=account_key,
+                timeout=timeout,
+            )
+        child_results = []
+        refresh_queued = False
+        for entry in entries:
+            child_bridge_id = normalize_bridge_id(entry.get("bridge_id") or "")
+            market = entry.get("market") or ""
+            child_channel = "trade"
+            if not child_bridge_id:
+                continue
+            try:
+                bridge_config(child_bridge_id)
+                child = self.get(
+                    child_bridge_id,
+                    child_channel,
+                    account_id,
+                    sections,
+                    force=force,
+                    subscribe=subscribe,
+                    account_type=account_type,
+                    account_key=account_key,
+                    timeout=timeout,
+                )
+                if child_channel != "normal" and market_child_needs_normal_probe(child, sections, market):
+                    try:
+                        normal_probe = self.get(
+                            child_bridge_id,
+                            "normal",
+                            account_id,
+                            sections,
+                            force=force,
+                            subscribe=subscribe,
+                            account_type=account_type,
+                            account_key=account_key,
+                            timeout=timeout,
+                        )
+                        child = merge_market_child_channel_results(child, normal_probe, market, sections)
+                    except Exception as normal_error:
+                        if isinstance(child, dict):
+                            child = dict(child)
+                            child.setdefault("fallback_channel_errors", {})["normal"] = str(normal_error)
+                if isinstance(child, dict):
+                    child = dict(child)
+                    child["market"] = market
+                    child["base_bridge_id"] = base_bridge_id
+                    child_results.append(child)
+                    refresh_queued = refresh_queued or bool((child.get("cache") or {}).get("refresh_queued"))
+            except Exception as e:
+                child_results.append({
+                    "market": market,
+                    "bridge_id": child_bridge_id,
+                    "base_bridge_id": base_bridge_id,
+                    "channel": child_channel,
+                    "error": str(e),
+                    "cache": {"enabled": bool(subscribe), "force": bool(force)},
+                })
+        if not child_results:
+            return self.get(
+                base_bridge_id,
+                channel,
+                account_id,
+                sections,
+                force=force,
+                subscribe=subscribe,
+                account_type=account_type,
+                account_key=account_key,
+                timeout=timeout,
+            )
+        return merge_market_account_results(
+            base_bridge_id,
+            "trade",
+            account_id,
+            sections,
+            child_results,
+            force=force,
+            refresh_queued=refresh_queued,
+            account_type=account_type,
+            account_key=account_key,
+        )
 
     def _cache_key(self, bridge_id, channel, account_id, section=None, account_type="STOCK", account_key=None):
         account_type = normalize_account_type(account_type)
@@ -7251,12 +8223,18 @@ class AccountDataCache(object):
                 row = result.get(section)
                 if row is None:
                     continue
+                cache_key = self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key)
+                if isinstance(row, dict) and not row.get("ok") and is_pipe_client_closed_error(row.get("error")):
+                    previous = self._entries.get(cache_key)
+                    if isinstance(previous, dict) and is_pipe_client_closed_error(previous.get("error")):
+                        self._entries.pop(cache_key, None)
+                    continue
                 stored = dict(row)
                 stored["checked_at"] = now
                 stored["checked_at_text"] = checked_at_text
                 stored["account_type"] = account_type
                 stored["account_key"] = account_key
-                self._entries[self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key)] = stored
+                self._entries[cache_key] = stored
 
     def _build_result(self, bridge_id, channel, account_id, sections, force=False, refresh_queued=False, account_type="STOCK", account_key=None):
         now = time.time()
@@ -7360,7 +8338,12 @@ def submit_order(body):
         raise ValueError("confirmation mismatch, expected: %s" % expected)
 
     order_type = STOCK_BUY if side == "buy" else STOCK_SELL
-    remark = body.get("order_remark") or "cfquant_web_%s" % int(time.time() * 1000)
+    remark = (
+        body.get("order_remark")
+        or body.get("remark")
+        or body.get("strategy_name")
+        or "cfquant_web_%s" % int(time.time() * 1000)
+    )
     params = {
         "account": {"account_id": account_id, "account_type": account_type},
         "stock_code": stock_code,
@@ -7374,6 +8357,7 @@ def submit_order(body):
         "order_remark": remark,
     }
     started = time.perf_counter()
+    timeout = request_timeout_value(body.get("timeout"), default=12.0, maximum=60.0)
     route = account_request(
         account_id,
         bridge_id,
@@ -7381,7 +8365,7 @@ def submit_order(body):
         "xttrader.order_stock",
         params,
         default_channel="trade",
-        timeout=12.0,
+        timeout=timeout,
         account_type=account_type,
         account_key=account_key,
     )
@@ -7445,13 +8429,18 @@ def submit_batch_orders(body):
         "order_remark": body.get("order_remark") or "cfquant_batch_%s" % int(time.time() * 1000),
     }
     started = time.perf_counter()
+    timeout = request_timeout_value(
+        body.get("timeout"),
+        default=max(12.0, len(orders) * 3.0),
+        maximum=120.0,
+    )
     route = account_batch_order_request(
         account_id,
         bridge_id,
         body.get("channel"),
         params,
         default_channel="trade",
-        timeout=max(12.0, len(orders) * 3.0),
+        timeout=timeout,
         account_type=account_type,
         account_key=account_key,
     )
@@ -7488,6 +8477,7 @@ def cancel_order(body):
         "order_id": order_id,
     }
     started = time.perf_counter()
+    timeout = request_timeout_value(body.get("timeout"), default=12.0, maximum=60.0)
     route = account_request(
         account_id,
         bridge_id,
@@ -7495,7 +8485,7 @@ def cancel_order(body):
         "xttrader.cancel_order_stock",
         params,
         default_channel="trade",
-        timeout=12.0,
+        timeout=timeout,
         account_type=account_type,
         account_key=account_key,
     )
@@ -7768,7 +8758,7 @@ def verify_account_pair(body):
         raise ValueError("account_id is required")
     bridge_config(bridge_id)
     status = account_route_status(account_id, bridge_id=bridge_id, account_type=account_type, account_key=account_key)
-    account = ACCOUNT_CACHE.get(
+    account = ACCOUNT_CACHE.get_market_routed(
         bridge_id,
         channel,
         account_id,
@@ -8681,11 +9671,11 @@ def data_channel_request(body, action, params, default_channel="trade", force_ch
     account_type = normalize_account_type(body.get("account_type") or "STOCK")
     account_key = str(body.get("account_key") or "").strip()
     preferred_channel = force_channel or body.get("channel")
-    timeout = float(body.get("timeout") or 12.0)
+    timeout = request_timeout_value(body.get("timeout"), default=12.0)
     started = time.perf_counter()
     requested_default = force_channel or preferred_channel or default_channel
     if account_id:
-        route = account_request(
+        route = routed_xtdata_account_request(
             account_id,
             body.get("bridge_id"),
             preferred_channel,
@@ -8700,8 +9690,8 @@ def data_channel_request(body, action, params, default_channel="trade", force_ch
         provider_account_id = account_id
         provider_account_type = account_type
         provider_account_key = account_key or account_key_for(account_id, account_type, route["bridge_id"])
-        provider_fallback = False
-        provider_attempts = []
+        provider_fallback = bool(route.get("fallback"))
+        provider_attempts = route.get("attempts") or []
     else:
         route = data_provider_request(
             action,
@@ -8859,6 +9849,7 @@ def subscribe_single_quote(body):
     account_id = str(body.get("account_id") or "").strip()
     account_type = normalize_account_type(body.get("account_type") or "STOCK")
     account_key = str(body.get("account_key") or "").strip()
+    timeout = request_timeout_value(body.get("timeout"), default=12.0)
     started = time.perf_counter()
     QUOTES.start()
     params = {
@@ -8870,14 +9861,14 @@ def subscribe_single_quote(body):
         "dividend_type": str(body.get("dividend_type") or "none"),
     }
     if account_id:
-        route = account_request(
+        route = routed_xtdata_account_request(
             account_id,
             body.get("bridge_id"),
             body.get("channel"),
             "xtdata.subscribe_quote",
             params,
             default_channel="normal",
-            timeout=12.0,
+            timeout=timeout,
             mark_offline_on_timeout=True,
             ignore_cooldown=True,
             account_type=account_type,
@@ -8892,7 +9883,7 @@ def subscribe_single_quote(body):
             params,
             requested_channel=body.get("channel"),
             default_channel="normal",
-            timeout=12.0,
+            timeout=timeout,
             bridge_id=body.get("bridge_id"),
         )
         provider_account_id = route.get("data_provider") or configured_default_account_id()
@@ -9725,6 +10716,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                         bridge_id=bridge_id,
                         account_id=account_id,
                         account_type=account_type,
+                        account_key=account_key,
                         event_name=event_name,
                         event_prefix=event_prefix,
                         job_id=job_id,
@@ -9745,7 +10737,12 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 sections = parse_sections((query.get("sections") or [""])[0])
                 force = parse_bool((query.get("force") or ["0"])[0])
                 subscribe = parse_bool((query.get("subscribe") or ["1"])[0])
-                self._write_json(ok(ACCOUNT_CACHE.get(
+                timeout = request_timeout_value(
+                    (query.get("timeout") or [""])[0],
+                    default=ACCOUNT_QUERY_TIMEOUT_SECONDS,
+                    maximum=max(ACCOUNT_QUERY_TIMEOUT_SECONDS, 180.0),
+                )
+                self._write_json(ok(ACCOUNT_CACHE.get_market_routed(
                     bridge_id,
                     channel,
                     account_id,
@@ -9754,6 +10751,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     subscribe=subscribe,
                     account_type=account_type,
                     account_key=account_key,
+                    timeout=timeout,
                 )))
             else:
                 self._write_json(fail("not found", 404), status=404)
@@ -9800,6 +10798,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             bridge_id=bridge_id,
             account_id=account_id,
             account_type=account_type,
+            account_key=account_key,
             event_name=event_name,
             event_prefix=event_prefix,
             job_id=job_id,
@@ -9828,6 +10827,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 bridge_id=bridge_id,
                 account_id=account_id,
                 account_type=account_type,
+                account_key=account_key,
                 event_name=event_name,
                 event_prefix=event_prefix,
                 job_id=job_id,
@@ -10061,6 +11061,11 @@ def spawn_reloaded_web_server(reload_request):
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+    popen_kwargs = {"creationflags": creationflags, "close_fds": False if os.name == "nt" else True}
+    if os.name == "nt":
+        hidden_kwargs = _hidden_subprocess_kwargs()
+        popen_kwargs.update(hidden_kwargs)
+        popen_kwargs["creationflags"] = creationflags | int(hidden_kwargs.get("creationflags") or 0)
     safe_print("cfquant web reload spawning next process url=%s" % (reload_request.get("next_url") or ""))
     try:
         process = subprocess.Popen(
@@ -10069,8 +11074,7 @@ def spawn_reloaded_web_server(reload_request):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-            close_fds=False if os.name == "nt" else True,
+            **popen_kwargs
         )
         safe_print("cfquant web reload spawned pid=%s" % process.pid)
         return {"pid": process.pid, "command": command}
